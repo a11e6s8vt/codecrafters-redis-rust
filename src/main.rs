@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 
 fn main() {
@@ -11,7 +11,7 @@ fn main() {
         match stream {
             Ok(stream) => {
                 println!("accepted new connection");
-                handle_connection(stream);
+                handle_client(stream);
             }
             Err(e) => {
                 println!("error: {}", e);
@@ -20,13 +20,11 @@ fn main() {
     }
 }
 
-fn handle_connection(mut stream: TcpStream) {
-    let buf_reader = BufReader::new(&mut stream);
-    let _request: Vec<_> = buf_reader
-        .lines()
-        .map(|result| result.unwrap())
-        .take_while(|line| !line.is_empty())
-        .collect();
+fn handle_client(mut stream: TcpStream) {
+    let mut buffer = [0; 1024];
+    stream
+        .read(&mut buffer)
+        .expect("failed to read from socket");
 
     let response = "+PONG\r\n";
 
