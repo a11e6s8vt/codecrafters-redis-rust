@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 
 fn main() {
@@ -22,11 +22,9 @@ fn main() {
 
 fn handle_client(mut stream: TcpStream) {
     let mut buffer = [0; 1024];
-    stream
-        .read(&mut buffer)
-        .expect("failed to read from socket");
+    while let Ok(_input) = stream.read(&mut buffer) {
+        let response = "+PONG\r\n";
 
-    let response = "+PONG\r\n";
-
-    stream.write_all(response.as_bytes()).unwrap();
+        stream.write_all(response.as_bytes()).unwrap();
+    }
 }
