@@ -1,9 +1,9 @@
+use client_handler::handle_client;
 use std::io::Result;
-use std::net::SocketAddr;
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
-};
+use tokio::io::BufReader;
+use tokio::net::TcpListener;
+
+mod client_handler;
 
 #[tokio::main]
 pub async fn main() -> Result<()> {
@@ -12,12 +12,14 @@ pub async fn main() -> Result<()> {
 
     // Create TCP Listener
     let listener = TcpListener::bind("127.0.0.1:6379").await?;
+    log::info!("Listening on port 6379");
 
     // Handle Multiple Clients in a loop
     loop {
         let (tcp_stream, socket_addr) = listener.accept().await?;
+        log::info!("Accepted connection from {}", socket_addr.ip().to_string());
         tokio::spawn(async move {
-            match handle_client(tcp_stream, socket_addr).await {
+            match handle_client(BufReader::new(tcp_stream), socket_addr).await {
                 Ok(ip) => {
                     log::info!("{} handle_client terminated gracefully", ip)
                 }
@@ -25,18 +27,4 @@ pub async fn main() -> Result<()> {
             }
         });
     }
-}
-
-async fn handle_client(mut stream: TcpStream, socket_addr: SocketAddr) -> Result<String> {
-    let mut buffer = [0; 1024];
-    loop {
-        let num_bytes = stream.read(&mut buffer).await?;
-        let response = "+PONG\r\n";
-
-        stream.write_all(response.as_bytes()).await?;
-        if num_bytes == 0 {
-            break;
-        }
-    }
-    Ok(socket_addr.ip().to_string())
 }
