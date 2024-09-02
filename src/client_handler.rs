@@ -51,7 +51,9 @@ pub async fn handle_client<'a>(
                                 if db.contains_key(&key) {
                                     let value =
                                         String::from_utf8(db.get(&key).unwrap().to_vec()).unwrap();
-                                    response.push_str("+");
+                                    response.push_str("$");
+                                    response.push_str(&value.len().to_string());
+                                    response.push_str("\r\n");
                                     response.push_str(&value);
                                 } else {
                                     response.push_str("+(nil)");
