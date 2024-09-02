@@ -25,3 +25,5 @@ thiserror = "1.0.32"                                # error handling
 tokio = { version = "1.23.0", features = ["full"] } # async networking
 femme = { version = "2.2.1" }
 log = { version = "0.4.20" }
+num = "0.4"
+r3bl_tui = "0.5.7"
