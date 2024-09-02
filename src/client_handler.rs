@@ -56,14 +56,15 @@ pub async fn handle_client<'a>(
                                     response.push_str("\r\n");
                                     response.push_str(&value);
                                 } else {
-                                    response.push_str("+(nil)");
+                                    response.push_str("$-1");
                                 }
                             } else {
-                                response.push_str("-(nil)");
+                                response.push_str("$-1");
                                 log::error!("Accessing the DB failed!");
                             }
                         }
                         response.push_str("\r\n");
+                        println!("response = {:?}", response);
                         let _ = conn.write(response.as_bytes()).await;
                         return Ok(());
                     }
