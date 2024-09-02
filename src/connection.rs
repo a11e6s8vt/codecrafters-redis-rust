@@ -15,21 +15,21 @@ use crate::resp::RespData;
 
 const CHUNK_SIZE: usize = 16 * 1024;
 
-pub struct Connection<'a> {
+pub struct Connection {
     pub socket_addr: SocketAddr,
-    reader: Arc<Mutex<BufReader<ReadHalf<'a>>>>,
-    writer: Arc<Mutex<BufWriter<WriteHalf<'a>>>>,
+    //reader: Arc<Mutex<BufReader<ReadHalf<'a>>>>,
+    writer: Arc<Mutex<BufWriter<TcpStream>>>,
     buffer: BytesMut,
 }
 
-impl<'a> Connection<'a> {
-    pub fn new(stream: &'a mut TcpStream, socket_addr: SocketAddr) -> Connection<'a> {
-        let (reader, writer) = stream.split();
-        let reader = Arc::new(Mutex::new(BufReader::new(reader)));
-        let writer = Arc::new(Mutex::new(BufWriter::new(writer)));
+impl Connection {
+    pub fn new(stream: TcpStream, socket_addr: SocketAddr) -> Connection {
+        // let (reader, writer) = stream.split();
+        // let reader = Arc::new(Mutex::new(BufReader::new(reader)));
+        let writer = Arc::new(Mutex::new(BufWriter::new(stream)));
         let c = Self {
             socket_addr,
-            reader,
+            // reader,
             writer,
             buffer: BytesMut::with_capacity(CHUNK_SIZE),
         };
@@ -38,7 +38,7 @@ impl<'a> Connection<'a> {
 
     pub async fn read(&mut self) -> anyhow::Result<Option<RespData>, RespError> {
         loop {
-            let mut guard = self.reader.lock().await;
+            let mut guard = self.writer.lock().await;
             if let Ok(num_bytes) = guard.read_buf(&mut self.buffer).await {
                 if num_bytes == 0 {
                     if self.buffer.is_empty() {

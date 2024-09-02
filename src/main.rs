@@ -27,12 +27,12 @@ pub async fn main() -> Result<()> {
 
     // Handle Multiple Clients in a loop
     loop {
-        let (mut tcp_stream, socket_addr) = listener.accept().await?;
+        let (tcp_stream, socket_addr) = listener.accept().await?;
         log::info!("Accepted connection from {}", socket_addr.ip().to_string());
         let db = Arc::clone(&db);
 
         tokio::spawn(async move {
-            let mut conn = Connection::new(&mut tcp_stream, socket_addr);
+            let mut conn = Connection::new(tcp_stream, socket_addr);
             handle_client(&mut conn, db).await;
         });
     }

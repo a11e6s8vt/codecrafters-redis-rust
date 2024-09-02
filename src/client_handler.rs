@@ -8,7 +8,7 @@ use crate::execute::execute_command;
 use crate::resp::RespData;
 
 pub async fn handle_client<'a>(
-    conn: &mut Connection<'a>,
+    conn: &mut Connection,
     db: Arc<Mutex<HashMap<String, Bytes>>>,
 ) -> anyhow::Result<()> {
     if let Ok(Some(resp_data)) = conn.read().await {
