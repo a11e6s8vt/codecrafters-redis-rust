@@ -64,8 +64,8 @@ pub async fn handle_client<'a>(
                             }
                         }
                         response.push_str("\r\n");
-                        log::error!("response = {:?}", response);
-                        let _ = conn.write(response.as_bytes()).await;
+                        log::error!("response = {:?}", response.as_str());
+                        conn.write(response.as_bytes()).await;
                         return Ok(());
                     }
                     Command::Set(o) => {
@@ -82,7 +82,7 @@ pub async fn handle_client<'a>(
                             }
                         }
 
-                        let _ = conn.write(response.as_bytes()).await;
+                        conn.write(response.as_bytes()).await;
                         return Ok(());
                     }
                 },
