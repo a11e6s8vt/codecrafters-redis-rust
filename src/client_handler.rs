@@ -64,7 +64,7 @@ pub async fn handle_client<'a>(
                             }
                         }
                         response.push_str("\r\n");
-                        println!("response = {:?}", response);
+                        log::error!("response = {:?}", response);
                         let _ = conn.write(response.as_bytes()).await;
                         return Ok(());
                     }
