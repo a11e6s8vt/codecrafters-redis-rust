@@ -47,7 +47,6 @@ impl<'a> Connection<'a> {
 
                 let tk = Tokenizer::new(&self.buffer[..num_bytes]);
                 if let Ok(data) = RespData::try_from(tk) {
-                    self.buffer.clear();
                     return Ok(Some(data));
                 } else {
                     // todo: it must be parse error
