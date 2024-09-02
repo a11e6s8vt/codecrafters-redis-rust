@@ -58,7 +58,6 @@ pub async fn handle_client<'a>(
                                 } else {
                                     response.push_str("$-1");
                                 }
-                                drop(db);
                             } else {
                                 response.push_str("$-1");
                                 log::error!("Accessing the DB failed!");
@@ -77,7 +76,6 @@ pub async fn handle_client<'a>(
                             if let Ok(mut db) = db.lock() {
                                 db.insert(key, Bytes::from(value));
                                 response.push_str(&format!("+OK\r\n"));
-                                drop(db);
                             } else {
                                 response.push_str(&format!("-Error 'SET' command failed\r\n"));
                                 log::error!("Inserting into the db failed");

@@ -1,12 +1,14 @@
 use crate::{resp::RespError, token::Tokenizer};
 use bytes::BytesMut;
 use core::net::SocketAddr;
+use std::sync::Arc;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
     net::{
         tcp::{ReadHalf, WriteHalf},
         TcpStream,
     },
+    sync::Mutex,
 };
 
 use crate::resp::RespData;
@@ -15,16 +17,16 @@ const CHUNK_SIZE: usize = 16 * 1024;
 
 pub struct Connection<'a> {
     pub socket_addr: SocketAddr,
-    reader: BufReader<ReadHalf<'a>>,
-    writer: BufWriter<WriteHalf<'a>>,
+    reader: Arc<Mutex<BufReader<ReadHalf<'a>>>>,
+    writer: Arc<Mutex<BufWriter<WriteHalf<'a>>>>,
     buffer: BytesMut,
 }
 
 impl<'a> Connection<'a> {
     pub fn new(stream: &'a mut TcpStream, socket_addr: SocketAddr) -> Connection<'a> {
         let (reader, writer) = stream.split();
-        let reader = BufReader::new(reader);
-        let writer = BufWriter::new(writer);
+        let reader = Arc::new(Mutex::new(BufReader::new(reader)));
+        let writer = Arc::new(Mutex::new(BufWriter::new(writer)));
         let c = Self {
             socket_addr,
             reader,
@@ -36,7 +38,8 @@ impl<'a> Connection<'a> {
 
     pub async fn read(&mut self) -> anyhow::Result<Option<RespData>, RespError> {
         loop {
-            if let Ok(num_bytes) = self.reader.read_buf(&mut self.buffer).await {
+            let mut guard = self.reader.lock().await;
+            if let Ok(num_bytes) = guard.read_buf(&mut self.buffer).await {
                 if num_bytes == 0 {
                     if self.buffer.is_empty() {
                         return Ok(None);
@@ -44,7 +47,7 @@ impl<'a> Connection<'a> {
                         return Err(RespError::Invalid);
                     }
                 }
-
+                drop(guard);
                 let tk = Tokenizer::new(&self.buffer[..num_bytes]);
                 if let Ok(data) = RespData::try_from(tk) {
                     return Ok(Some(data));
@@ -57,7 +60,9 @@ impl<'a> Connection<'a> {
     }
 
     pub async fn write(&mut self, buf: &[u8]) {
-        let _ = self.writer.write_all(buf).await;
-        let _ = self.writer.flush().await;
+        let mut guard = self.writer.lock().await;
+        let _ = guard.write_all(buf).await;
+        let _ = guard.flush().await;
+        drop(guard);
     }
 }
