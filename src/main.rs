@@ -1,10 +1,9 @@
-use bytes::Bytes;
 use client_handler::handle_client;
-use connection::Connection;
 use std::collections::HashMap;
 use std::io::Result;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::net::TcpListener;
+use tokio::sync::Mutex;
 
 mod client_handler;
 mod command;
@@ -23,17 +22,14 @@ pub async fn main() -> Result<()> {
     log::info!("Listening on port 6379");
 
     // initialise the DB
-    let db: Arc<Mutex<HashMap<String, Bytes>>> = Arc::new(Mutex::new(HashMap::new()));
+    let db: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
 
     // Handle Multiple Clients in a loop
     loop {
         let (tcp_stream, socket_addr) = listener.accept().await?;
         log::info!("Accepted connection from {}", socket_addr.ip().to_string());
-        let db = Arc::clone(&db);
+        let db = db.clone();
 
-        tokio::spawn(async move {
-            let mut conn = Connection::new(tcp_stream, socket_addr);
-            handle_client(&mut conn, db).await;
-        });
+        tokio::spawn(handle_client(tcp_stream, socket_addr, db.clone()));
     }
 }

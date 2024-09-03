@@ -49,6 +49,7 @@ impl<'b> TryFrom<Tokenizer<'b>> for RespData {
     type Error = RespError;
 
     fn try_from(mut tokens: Tokenizer) -> std::result::Result<Self, Self::Error> {
+        log::info!("Token");
         let first_token = if let Some(Ok(first_token)) = tokens.next() {
             first_token
         } else {

@@ -1,7 +1,13 @@
-use crate::{resp::RespError, token::Tokenizer};
+use crate::{
+    command::{Command, CommandError},
+    execute::execute_command,
+    resp::RespError,
+    token::Tokenizer,
+};
 use bytes::BytesMut;
 use core::net::SocketAddr;
-use std::sync::Arc;
+use futures::{SinkExt, StreamExt};
+use std::{collections::HashMap, sync::Arc};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
     net::{
@@ -10,59 +16,174 @@ use tokio::{
     },
     sync::Mutex,
 };
+use tokio_util::codec::{FramedRead, FramedWrite, LinesCodec};
 
 use crate::resp::RespData;
 
 const CHUNK_SIZE: usize = 16 * 1024;
+const CRLF: &str = "\r\n";
 
-pub struct Connection {
+// pub struct Connection<'a> {
+//     pub socket_addr: SocketAddr,
+//     reader: FramedRead<ReadHalf<'a>, LinesCodec>,
+//     writer: FramedWrite<WriteHalf<'a>, LinesCodec>,
+//     buffer: BytesMut,
+// }
+
+pub struct Connection<'a> {
     pub socket_addr: SocketAddr,
-    //reader: Arc<Mutex<BufReader<ReadHalf<'a>>>>,
-    writer: Arc<Mutex<BufWriter<TcpStream>>>,
+    reader: Arc<Mutex<BufReader<ReadHalf<'a>>>>,
+    writer: Arc<Mutex<BufWriter<WriteHalf<'a>>>>,
     buffer: BytesMut,
 }
 
-impl Connection {
-    pub fn new(stream: TcpStream, socket_addr: SocketAddr) -> Connection {
-        // let (reader, writer) = stream.split();
-        // let reader = Arc::new(Mutex::new(BufReader::new(reader)));
-        let writer = Arc::new(Mutex::new(BufWriter::new(stream)));
+impl<'a> Connection<'a> {
+    // pub fn new(stream: &'a mut TcpStream, socket_addr: SocketAddr) -> Connection<'a> {
+    //     let (reader, writer) = stream.split();
+    //     let reader = FramedRead::new(reader, LinesCodec::new());
+    //     let writer = FramedWrite::new(writer, LinesCodec::new());
+    //     let c = Self {
+    //         socket_addr,
+    //         reader,
+    //         writer,
+    //         buffer: BytesMut::with_capacity(CHUNK_SIZE),
+    //     };
+    //     c
+    // }
+    pub fn new(stream: &'a mut TcpStream, socket_addr: SocketAddr) -> Connection<'a> {
+        let (reader, writer) = stream.split();
+        let reader = Arc::new(Mutex::new(BufReader::new(reader)));
+        let writer = Arc::new(Mutex::new(BufWriter::new(writer)));
         let c = Self {
             socket_addr,
-            // reader,
+            reader,
             writer,
             buffer: BytesMut::with_capacity(CHUNK_SIZE),
         };
         c
     }
 
-    pub async fn read(&mut self) -> anyhow::Result<Option<RespData>, RespError> {
-        loop {
-            let mut guard = self.writer.lock().await;
-            if let Ok(num_bytes) = guard.read_buf(&mut self.buffer).await {
-                if num_bytes == 0 {
-                    if self.buffer.is_empty() {
-                        return Ok(None);
-                    } else {
-                        return Err(RespError::Invalid);
-                    }
-                }
-                drop(guard);
-                let tk = Tokenizer::new(&self.buffer[..num_bytes]);
-                if let Ok(data) = RespData::try_from(tk) {
-                    return Ok(Some(data));
+    // pub async fn read(&mut self) -> anyhow::Result<Option<RespData>, RespError> {
+    //     loop {
+    //         let mut guard = self.reader.lock().await;
+    //         let num_bytes = guard
+    //             .read_buf(&mut self.buffer)
+    //             .await
+    //             .expect("failed to read from socket");
+    //         drop(guard);
+    //         if num_bytes == 0 {
+    //             if self.buffer.is_empty() {
+    //                 return Ok(None);
+    //             } else {
+    //                 return Err(RespError::Invalid);
+    //             }
+    //         }
+
+    //         let tk = Tokenizer::new(&self.buffer[..num_bytes]);
+    //         if let Ok(data) = RespData::try_from(tk) {
+    //             return Ok(Some(data));
+    //         } else {
+    //             // todo: it must be parse error
+    //             return Err(RespError::Invalid);
+    //         }
+    //     }
+    // }
+
+    // pub async fn write(&mut self, buf: &[u8]) {
+    //     let mut guard = self.writer.lock().await;
+    //     let _ = guard.write_all(buf).await;
+    //     let _ = guard.flush().await;
+    //     drop(guard);
+    // }
+
+    pub async fn apply(
+        &mut self,
+        db: Arc<Mutex<HashMap<String, String>>>,
+    ) -> anyhow::Result<(), RespError> {
+        let mut guard = self.reader.lock().await;
+        while let Ok(num_bytes) = guard.read_buf(&mut self.buffer).await {
+            if num_bytes == 0 {
+                if self.buffer.is_empty() {
+                    return Ok(());
                 } else {
-                    // todo: it must be parse error
                     return Err(RespError::Invalid);
                 }
             }
+            let tk = Tokenizer::new(&self.buffer[..num_bytes]);
+            let mut response = String::new();
+            if let Ok(data) = RespData::try_from(tk) {
+                println!("{:?}", &data);
+                match data {
+                    RespData::Array(v) => match execute_command(v) {
+                        Ok(res) => match res {
+                            Command::Ping(o) => {
+                                if o.value.is_some() {
+                                    response.push_str(&format!("+{}{}", o.value.unwrap(), CRLF));
+                                } else {
+                                    response.push_str(&format!("+PONG{}", CRLF));
+                                }
+                            }
+                            Command::Echo(o) => {
+                                if o.value.is_some() {
+                                    response.push_str(&format!("+{}{}", o.value.unwrap(), CRLF));
+                                } else {
+                                    response.push_str(&format!(
+                                        "-Error ERR wrong number of arguments for 'echo' command{}",
+                                        CRLF
+                                    ));
+                                }
+                            }
+                            Command::Get(o) => {
+                                let key = o.key;
+                                let guard = db.lock().await;
+                                if guard.contains_key(&key) {
+                                    let value = guard.get(&key).unwrap();
+                                    response.push_str(&format!(
+                                        "${}{}{}{}",
+                                        &value.len().to_string(),
+                                        CRLF,
+                                        &value,
+                                        CRLF
+                                    ));
+                                } else {
+                                    response.push_str(&format!("$-1{}", CRLF));
+                                }
+                                drop(guard);
+                            }
+                            Command::Set(o) => {
+                                let key = o.key;
+                                let value = o.value;
+                                let mut guard = db.lock().await;
+                                guard.insert(key, value);
+                                response.push_str(&format!("+OK{}", CRLF));
+                                drop(guard);
+                            }
+                        },
+                        Err(e) => match e.clone() {
+                            CommandError::SyntaxError(n) => {
+                                response.push_str(&format!("-{}{}", &e.message(), CRLF));
+                            }
+                            CommandError::WrongNumberOfArguments(n) => {
+                                response.push_str(&format!("-{}{}", &e.message(), CRLF));
+                            }
+                            CommandError::NotSupported => {
+                                response.push_str(&format!("-{}{}", &e.message(), CRLF));
+                            }
+                        },
+                    },
+                    _ => {}
+                };
+            } else {
+                // todo: it must be parse error
+                return Err(RespError::Invalid);
+            }
+            let mut guard = self.writer.lock().await;
+            let _ = guard.write_all(response.as_bytes()).await;
+            let _ = guard.flush().await;
+            drop(guard);
+            self.buffer.clear();
         }
-    }
 
-    pub async fn write(&mut self, buf: &[u8]) {
-        let mut guard = self.writer.lock().await;
-        let _ = guard.write_all(buf).await;
-        let _ = guard.flush().await;
-        drop(guard);
+        Ok(())
     }
 }
