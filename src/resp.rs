@@ -93,6 +93,7 @@ impl<'b> TryFrom<Tokenizer<'b>> for RespData {
                                             } else {
                                                 res.push(RespData::String(word));
                                             }
+                                            dbg!(res.clone());
                                         } else {
                                             return Err(RespError::Invalid);
                                         }

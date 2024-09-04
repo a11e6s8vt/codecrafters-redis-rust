@@ -175,7 +175,7 @@ impl<'a> Connection<'a> {
                             CommandError::NotSupported => {
                                 response.push_str(&format!("-{}{}", &e.message(), CRLF));
                             }
-                            CommandError::NotValidType { cmd, arg } => {
+                            CommandError::NotValidType(x) => {
                                 response.push_str(&format!("-{}{}", &e.message(), CRLF));
                             }
                         },
