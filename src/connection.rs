@@ -1,13 +1,13 @@
 use crate::{
     command::{Command, CommandError},
-    execute::execute_command,
+    database::ExpiringHashMap,
+    parse::parse_command,
     resp::RespError,
     token::Tokenizer,
 };
 use bytes::BytesMut;
 use core::net::SocketAddr;
-use futures::{SinkExt, StreamExt};
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
     net::{
@@ -98,7 +98,7 @@ impl<'a> Connection<'a> {
 
     pub async fn apply(
         &mut self,
-        db: Arc<Mutex<HashMap<String, String>>>,
+        db: ExpiringHashMap<String, String>,
     ) -> anyhow::Result<(), RespError> {
         let mut guard = self.reader.lock().await;
         while let Ok(num_bytes) = guard.read_buf(&mut self.buffer).await {
@@ -110,11 +110,12 @@ impl<'a> Connection<'a> {
                 }
             }
             let tk = Tokenizer::new(&self.buffer[..num_bytes]);
+            println!("{:?}", &tk);
             let mut response = String::new();
             if let Ok(data) = RespData::try_from(tk) {
                 println!("{:?}", &data);
                 match data {
-                    RespData::Array(v) => match execute_command(v) {
+                    RespData::Array(v) => match parse_command(v) {
                         Ok(res) => match res {
                             Command::Ping(o) => {
                                 if o.value.is_some() {
@@ -135,28 +136,33 @@ impl<'a> Connection<'a> {
                             }
                             Command::Get(o) => {
                                 let key = o.key;
-                                let guard = db.lock().await;
-                                if guard.contains_key(&key) {
-                                    let value = guard.get(&key).unwrap();
-                                    response.push_str(&format!(
-                                        "${}{}{}{}",
-                                        &value.len().to_string(),
-                                        CRLF,
-                                        &value,
-                                        CRLF
-                                    ));
+                                // let guard = db.lock().await;
+                                if db.contains_key(&key).await {
+                                    if let Some(value) = db.get(&key).await {
+                                        response.push_str(&format!(
+                                            "${}{}{}{}",
+                                            &value.len().to_string(),
+                                            CRLF,
+                                            &value,
+                                            CRLF
+                                        ));
+                                    }
                                 } else {
                                     response.push_str(&format!("$-1{}", CRLF));
                                 }
-                                drop(guard);
+                                // drop(guard);
                             }
                             Command::Set(o) => {
+                                dbg!(o.clone());
                                 let key = o.key;
                                 let value = o.value;
-                                let mut guard = db.lock().await;
-                                guard.insert(key, value);
+                                let expiry = o.expiry;
+                                // let mut guard = db.lock().await;
+                                let mut db = db.clone();
+                                db.insert(key, value, expiry).await;
                                 response.push_str(&format!("+OK{}", CRLF));
-                                drop(guard);
+                                drop(db);
+                                dbg!("response = {}", response.clone());
                             }
                         },
                         Err(e) => match e.clone() {
@@ -167,6 +173,9 @@ impl<'a> Connection<'a> {
                                 response.push_str(&format!("-{}{}", &e.message(), CRLF));
                             }
                             CommandError::NotSupported => {
+                                response.push_str(&format!("-{}{}", &e.message(), CRLF));
+                            }
+                            CommandError::NotValidType { cmd, arg } => {
                                 response.push_str(&format!("-{}{}", &e.message(), CRLF));
                             }
                         },

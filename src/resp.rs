@@ -18,7 +18,7 @@ impl From<Utf8Error> for RespError {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum RespData {
     String(String),
     ErrorStr(String),
@@ -49,7 +49,6 @@ impl<'b> TryFrom<Tokenizer<'b>> for RespData {
     type Error = RespError;
 
     fn try_from(mut tokens: Tokenizer) -> std::result::Result<Self, Self::Error> {
-        log::info!("Token");
         let first_token = if let Some(Ok(first_token)) = tokens.next() {
             first_token
         } else {
@@ -75,6 +74,7 @@ impl<'b> TryFrom<Tokenizer<'b>> for RespData {
                         match token {
                             Token::Dollar => {
                                 if let Some(Ok(t)) = tokens.next() {
+                                    dbg!(t.clone());
                                     let token_len = match t {
                                         Token::Num(i) => i,
                                         _ => return Err(RespError::Invalid),
@@ -83,11 +83,16 @@ impl<'b> TryFrom<Tokenizer<'b>> for RespData {
                                     if let Some(Ok(t)) = tokens.next() {
                                         let word = match t {
                                             Token::Word(w) => w,
+                                            Token::Num(w) => w.to_string(),
                                             _ => return Err(RespError::Invalid),
                                         };
+
                                         if word.len() == token_len as usize {
-                                            // res.push(RespData::Integer(token_len));
-                                            res.push(RespData::String(word));
+                                            if let Ok(n) = word.parse::<i64>() {
+                                                res.push(RespData::Integer(n))
+                                            } else {
+                                                res.push(RespData::String(word));
+                                            }
                                         } else {
                                             return Err(RespError::Invalid);
                                         }

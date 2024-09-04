@@ -1,4 +1,5 @@
 use client_handler::handle_client;
+use database::{prune_database, ExpiringHashMap};
 use std::collections::HashMap;
 use std::io::Result;
 use std::sync::Arc;
@@ -8,7 +9,8 @@ use tokio::sync::Mutex;
 mod client_handler;
 mod command;
 mod connection;
-mod execute;
+mod database;
+mod parse;
 mod resp;
 mod token;
 
@@ -22,7 +24,8 @@ pub async fn main() -> Result<()> {
     log::info!("Listening on port 6379");
 
     // initialise the DB
-    let db: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+    //let db: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+    let db: ExpiringHashMap<String, String> = ExpiringHashMap::new();
 
     // Handle Multiple Clients in a loop
     loop {
@@ -30,6 +33,6 @@ pub async fn main() -> Result<()> {
         log::info!("Accepted connection from {}", socket_addr.ip().to_string());
         let db = db.clone();
 
-        tokio::spawn(handle_client(tcp_stream, socket_addr, db.clone()));
+        tokio::spawn(handle_client(tcp_stream, socket_addr, db));
     }
 }

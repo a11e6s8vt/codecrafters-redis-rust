@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Get {
     pub key: String,
@@ -7,6 +9,7 @@ pub struct Get {
 pub struct Set {
     pub key: String,
     pub value: String,
+    pub expiry: Option<Duration>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -32,6 +35,7 @@ pub enum CommandError {
     SyntaxError(String),
     WrongNumberOfArguments(String),
     NotSupported,
+    NotValidType { cmd: String, arg: String },
 }
 
 impl CommandError {
@@ -42,6 +46,12 @@ impl CommandError {
                 format!("ERR wrong number of arguments for '{}' command", x)
             }
             Self::NotSupported => format!("ERR Command Not Supported"),
+            Self::NotValidType { cmd, arg } => {
+                format!(
+                    "ERR '{}' is not a valid type for the command '{}'",
+                    arg, cmd
+                )
+            }
         }
     }
 }
