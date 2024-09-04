@@ -137,16 +137,15 @@ impl<'a> Connection<'a> {
                             Command::Get(o) => {
                                 let key = o.key;
                                 // let guard = db.lock().await;
-                                if db.contains_key(&key).await {
-                                    if let Some(value) = db.get(&key).await {
-                                        response.push_str(&format!(
-                                            "${}{}{}{}",
-                                            &value.len().to_string(),
-                                            CRLF,
-                                            &value,
-                                            CRLF
-                                        ));
-                                    }
+                                // if db.contains_key(&key).await {
+                                if let Some(value) = db.get(&key).await {
+                                    response.push_str(&format!(
+                                        "${}{}{}{}",
+                                        &value.len().to_string(),
+                                        CRLF,
+                                        &value,
+                                        CRLF
+                                    ));
                                 } else {
                                     response.push_str(&format!("$-1{}", CRLF));
                                 }
