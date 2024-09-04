@@ -59,7 +59,7 @@ impl<'b> TryFrom<Tokenizer<'b>> for RespData {
             Token::Asterisk => {
                 let mut res: Vec<RespData> = Vec::new();
 
-                let array_len = if let Some(Ok(second_token)) = tokens.next() {
+                let mut array_len = if let Some(Ok(second_token)) = tokens.next() {
                     match second_token {
                         Token::Num(i) => i,
                         _ => return Err(RespError::Invalid),
@@ -83,21 +83,34 @@ impl<'b> TryFrom<Tokenizer<'b>> for RespData {
                                     if let Some(Ok(t)) = tokens.next() {
                                         let word = match t {
                                             Token::Word(w) => w,
-                                            Token::Num(w) => w.to_string(),
                                             _ => return Err(RespError::Invalid),
                                         };
 
+                                        if word.to_ascii_lowercase() == "px" {
+                                            array_len -= 1;
+                                            continue;
+                                        }
+
                                         if word.len() == token_len as usize {
-                                            if let Ok(n) = word.parse::<i64>() {
-                                                res.push(RespData::Integer(n))
-                                            } else {
-                                                res.push(RespData::String(word));
-                                            }
+                                            res.push(RespData::String(word));
                                             dbg!(res.clone());
                                         } else {
                                             return Err(RespError::Invalid);
                                         }
                                     }
+                                }
+                            }
+                            Token::Colon => {
+                                if let Some(Ok(t)) = tokens.next() {
+                                    let n = match t {
+                                        Token::Num(w) => w,
+                                        _ => return Err(RespError::Invalid),
+                                    };
+
+                                    res.push(RespData::Integer(n));
+                                    dbg!(res.clone());
+                                } else {
+                                    return Err(RespError::Invalid);
                                 }
                             }
                             _ => return Err(RespError::Invalid),
