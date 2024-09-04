@@ -67,14 +67,12 @@ impl<'b> TryFrom<Tokenizer<'b>> for RespData {
                 } else {
                     return Err(RespError::Invalid);
                 };
-                // res.push(RespData::Integer(array_len));
 
                 while let Some(tk) = tokens.next() {
                     if let Ok(token) = tk {
                         match token {
                             Token::Dollar => {
                                 if let Some(Ok(t)) = tokens.next() {
-                                    dbg!(t.clone());
                                     let token_len = match t {
                                         Token::Num(i) => i,
                                         _ => return Err(RespError::Invalid),
@@ -83,6 +81,7 @@ impl<'b> TryFrom<Tokenizer<'b>> for RespData {
                                     if let Some(Ok(t)) = tokens.next() {
                                         let word = match t {
                                             Token::Word(w) => w,
+                                            Token::Num(n) => n.to_string(),
                                             _ => return Err(RespError::Invalid),
                                         };
 
@@ -92,8 +91,11 @@ impl<'b> TryFrom<Tokenizer<'b>> for RespData {
                                         }
 
                                         if word.len() == token_len as usize {
-                                            res.push(RespData::String(word));
-                                            dbg!(res.clone());
+                                            if let Ok(n) = word.parse::<i64>() {
+                                                res.push(RespData::Integer(n));
+                                            } else {
+                                                res.push(RespData::String(word));
+                                            }
                                         } else {
                                             return Err(RespError::Invalid);
                                         }
@@ -108,7 +110,6 @@ impl<'b> TryFrom<Tokenizer<'b>> for RespData {
                                     };
 
                                     res.push(RespData::Integer(n));
-                                    dbg!(res.clone());
                                 } else {
                                     return Err(RespError::Invalid);
                                 }
