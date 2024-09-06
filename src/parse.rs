@@ -1,9 +1,7 @@
 use std::time::Duration;
 
-use num::Integer;
-
 use crate::{
-    command::{Command, CommandError, Echo, Get, Ping, Set},
+    cmds::{Command, CommandError, Config, Echo, Get, Ping, Set, SubCommand},
     resp::RespData,
 };
 
@@ -95,6 +93,33 @@ pub fn parse_command(v: Vec<RespData>) -> anyhow::Result<Command, CommandError> 
                     let e = Echo { value: None };
                     return Ok(Command::Echo(e));
                 };
+            }
+            "config" => {
+                let subcommand = if let Some(RespData::String(name)) = v_iter.next() {
+                    match name.to_ascii_lowercase().as_str() {
+                        "get" => {
+                            let pattern = if let Some(RespData::String(pattern)) = v_iter.next() {
+                                pattern.to_owned()
+                            } else {
+                                return Err(CommandError::WrongNumberOfArguments("config".into()));
+                            };
+                            SubCommand::Get(pattern)
+                        }
+                        _ => return Err(CommandError::UnknownSubCommand("get".into())),
+                    }
+                } else {
+                    return Err(CommandError::WrongNumberOfArguments("config".into()));
+                };
+
+                if let Some(_) = v_iter.next() {
+                    return Err(CommandError::SyntaxError("config".into()));
+                }
+
+                let s = Config {
+                    sub_command: subcommand,
+                };
+
+                return Ok(Command::Config(s));
             }
             _ => {}
         }

@@ -1,26 +1,8 @@
-use std::time::Duration;
+pub use command::{Echo, Get, Ping, Set};
+pub use config::{Config, SubCommand};
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Get {
-    pub key: String,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Set {
-    pub key: String,
-    pub value: String,
-    pub expiry: Option<Duration>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Ping {
-    pub value: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Echo {
-    pub value: Option<String>,
-}
+mod command;
+mod config;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
@@ -28,6 +10,7 @@ pub enum Command {
     Set(Set),
     Ping(Ping),
     Echo(Echo),
+    Config(Config),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -36,6 +19,7 @@ pub enum CommandError {
     WrongNumberOfArguments(String),
     NotSupported,
     NotValidType(String),
+    UnknownSubCommand(String),
 }
 
 impl CommandError {
@@ -49,6 +33,7 @@ impl CommandError {
             Self::NotValidType(x) => {
                 format!("ERR Not a valid type for the command '{}'", x)
             }
+            Self::UnknownSubCommand(x) => format!("ERR Unknown subcommand '{}'", x),
         }
     }
 }

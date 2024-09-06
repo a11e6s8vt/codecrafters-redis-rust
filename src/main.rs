@@ -1,15 +1,16 @@
+use cli::Cli;
 use client_handler::handle_client;
-use database::{prune_database, ExpiringHashMap};
-use std::collections::HashMap;
+use database::ExpiringHashMap;
+use global::LIST;
 use std::io::Result;
-use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
 
+mod cli;
 mod client_handler;
-mod command;
+mod cmds;
 mod connection;
 mod database;
+mod global;
 mod parse;
 mod resp;
 mod token;
@@ -18,6 +19,11 @@ mod token;
 pub async fn main() -> Result<()> {
     // Start logging.
     femme::start();
+
+    log::info!("initialising database files...");
+    let config_params = Cli::new(std::env::args());
+    LIST.push(("dir".to_string(), config_params.dir_name));
+    LIST.push(("dbfilename".to_string(), config_params.db_filename));
 
     // Create TCP Listener
     let listener = TcpListener::bind("127.0.0.1:6379").await?;

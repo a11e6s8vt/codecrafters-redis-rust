@@ -1,6 +1,7 @@
 use crate::{
-    command::{Command, CommandError},
+    cmds::{Command, CommandError, SubCommand},
     database::ExpiringHashMap,
+    global::LIST,
     parse::parse_command,
     resp::RespError,
     token::Tokenizer,
@@ -16,7 +17,6 @@ use tokio::{
     },
     sync::Mutex,
 };
-use tokio_util::codec::{FramedRead, FramedWrite, LinesCodec};
 
 use crate::resp::RespData;
 
@@ -163,6 +163,29 @@ impl<'a> Connection<'a> {
                                 drop(db);
                                 dbg!("response = {}", response.clone());
                             }
+                            Command::Config(o) => {
+                                dbg!(o.clone());
+                                match o.sub_command {
+                                    SubCommand::Get(pattern) => {
+                                        if let Some(res) = LIST.get_val(&pattern) {
+                                            dbg!(res);
+                                            // *2\r\n$3\r\ndir\r\n$16\r\n/tmp/redis-files\r\n
+                                            response.push_str(&format!(
+                                                "*2{}${}{}{}{}${}{}{}{}",
+                                                CRLF,
+                                                pattern.len(),
+                                                CRLF,
+                                                pattern,
+                                                CRLF,
+                                                res.len(),
+                                                CRLF,
+                                                res,
+                                                CRLF
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
                         },
                         Err(e) => match e.clone() {
                             CommandError::SyntaxError(n) => {
@@ -175,6 +198,9 @@ impl<'a> Connection<'a> {
                                 response.push_str(&format!("-{}{}", &e.message(), CRLF));
                             }
                             CommandError::NotValidType(x) => {
+                                response.push_str(&format!("-{}{}", &e.message(), CRLF));
+                            }
+                            CommandError::UnknownSubCommand(x) => {
                                 response.push_str(&format!("-{}{}", &e.message(), CRLF));
                             }
                         },

@@ -19,19 +19,11 @@ edition = "2021"
 #
 # DON'T EDIT THIS!
 [dependencies]
-anyhow = "1.0.59" # error handling
-bytes = "1.7.1" # helps manage buffers
-thiserror = "1.0.63" # error handling
+anyhow = "1.0.59"                                   # error handling
+bytes = "1.7.1"                                     # helps manage buffers
+thiserror = "1.0.63"                                # error handling
 tokio = { version = "1.40.0", features = ["full"] } # async networking
 femme = { version = "2.2.1" }
 log = { version = "0.4.20" }
 num = "0.4"
-tokio-util = { version = "0.7.11", features = ["codec"] }
-futures = { version = "0.3.30", features = [
-    "std",
-    "async-await",
-    "compat",
-    "io-compat",
-    "executor",
-    "thread-pool",
-] }
+glob = "0.3.1"
