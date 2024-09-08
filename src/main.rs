@@ -1,7 +1,7 @@
 use cli::Cli;
 use client_handler::handle_client;
-use database::ExpiringHashMap;
-use global::LIST;
+use db::ExpiringHashMap;
+use global::CONFIG_LIST;
 use std::io::Result;
 use tokio::net::TcpListener;
 
@@ -9,7 +9,7 @@ mod cli;
 mod client_handler;
 mod cmds;
 mod connection;
-mod database;
+mod db;
 mod global;
 mod parse;
 mod resp;
@@ -22,8 +22,8 @@ pub async fn main() -> Result<()> {
 
     log::info!("initialising database files...");
     let config_params = Cli::new(std::env::args());
-    LIST.push(("dir".to_string(), config_params.dir_name));
-    LIST.push(("dbfilename".to_string(), config_params.db_filename));
+    CONFIG_LIST.push(("dir".to_string(), config_params.dir_name));
+    CONFIG_LIST.push(("dbfilename".to_string(), config_params.db_filename));
 
     // Create TCP Listener
     let listener = TcpListener::bind("127.0.0.1:6379").await?;

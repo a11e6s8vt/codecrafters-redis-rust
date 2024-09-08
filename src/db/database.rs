@@ -2,10 +2,37 @@ use std::collections::HashMap;
 use std::fmt::{Debug, Display};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, MutexGuard};
+
+struct BarIter<'a, K: 'a, V: 'a> {
+    guard: MutexGuard<'a, Vec<(K, V)>>,
+}
+
+impl<'a, 'b: 'a, K: 'a, V: 'a> IntoIterator for &'b BarIter<'a, K, V> {
+    type Item = &'a (K, V);
+    type IntoIter = ::std::slice::Iter<'a, (K, V)>;
+
+    fn into_iter(self) -> ::std::slice::Iter<'a, (K, V)> {
+        self.guard.iter()
+    }
+}
+
+pub struct ExpiringHashMapIterator<K, V> {
+    iter: std::collections::hash_map::IntoIter<K, (V, Option<(Instant, Duration)>)>,
+}
+
+impl<K, V> Iterator for ExpiringHashMapIterator<K, V> {
+    type Item = (K, (V, Option<(Instant, Duration)>));
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter.next()
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct ExpiringHashMap<K, V> {
+    size: Arc<Mutex<usize>>,
+    expire_size: Arc<Mutex<usize>>,
     hash_map: Arc<Mutex<HashMap<K, (V, Option<(Instant, Duration)>)>>>,
 }
 
@@ -16,19 +43,38 @@ where
 {
     pub fn new() -> Self {
         Self {
+            size: Arc::new(Mutex::new(0)),
+            expire_size: Arc::new(Mutex::new(0)),
             hash_map: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    pub async fn get_ht_size(&self) -> usize {
+        *self.size.lock().await
+    }
+
+    pub async fn get_ht_expire_size(&self) -> usize {
+        *self.expire_size.lock().await
+    }
+
+    pub async fn iter(&mut self) -> ExpiringHashMapIterator<K, V> {
+        let map = self.hash_map.lock().await;
+        let iter = map.clone().into_iter();
+        ExpiringHashMapIterator { iter }
     }
 
     pub async fn insert(&mut self, k: K, v: V, expiry: Option<Duration>) -> Option<V> {
         let mut guard = self.hash_map.lock().await;
         let val = if expiry.is_some() {
+            *self.expire_size.lock().await += 1;
             guard
                 .insert(k, (v, Some((Instant::now(), expiry.unwrap()))))
                 .map(|v| v.0)
         } else {
             guard.insert(k, (v, None)).map(|v| v.0)
         };
+        *self.size.lock().await += 1;
+        dbg!(self.size.lock().await);
         drop(guard);
         val
     }

@@ -1,4 +1,4 @@
-use crate::database::ExpiringHashMap;
+use crate::db::ExpiringHashMap;
 use core::net::SocketAddr;
 use std::sync::Arc;
 use tokio::{net::TcpStream, sync::Mutex};

@@ -46,7 +46,7 @@ impl<T> GlobalConfig<T> {
                     return Some(v);
                 }
                 if next.is_some() {
-                    let mut next_item = next.as_mut().unwrap().borrow_mut();
+                    let next_item = next.as_mut().unwrap().borrow_mut();
                     data = next_item.data.get();
                     next = next_item.next.get();
                 } else {
@@ -60,4 +60,4 @@ impl<T> GlobalConfig<T> {
     }
 }
 
-pub(crate) static LIST: GlobalConfig<String> = GlobalConfig::new();
+pub(crate) static CONFIG_LIST: GlobalConfig<String> = GlobalConfig::new();

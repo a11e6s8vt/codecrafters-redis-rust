@@ -85,10 +85,10 @@ impl<'b> TryFrom<Tokenizer<'b>> for RespData {
                                             _ => return Err(RespError::Invalid),
                                         };
 
-                                        if word.to_ascii_lowercase() == "px" {
-                                            array_len -= 1;
-                                            continue;
-                                        }
+                                        // if word.to_ascii_lowercase() == "px" {
+                                        //     array_len -= 1;
+                                        //     continue;
+                                        // }
 
                                         if word.len() == token_len as usize {
                                             if let Ok(n) = word.parse::<i64>() {

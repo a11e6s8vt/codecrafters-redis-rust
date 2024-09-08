@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use crate::{
-    cmds::{Command, CommandError, Config, Echo, Get, Ping, Set, SubCommand},
+    cmds::{Command, CommandError, Config, Echo, Get, Ping, Save, Set, SubCommand},
     resp::RespData,
 };
 
@@ -32,15 +32,37 @@ pub fn parse_command(v: Vec<RespData>) -> anyhow::Result<Command, CommandError> 
                     return Err(CommandError::WrongNumberOfArguments("set".into()));
                 };
 
-                let expiry = match v_iter.next() {
-                    Some(RespData::Integer(expiry)) => {
-                        Some(Duration::from_millis(expiry.clone() as u64))
-                    }
+                let mut expiry: Option<Duration> = None;
+                match v_iter.next() {
+                    Some(RespData::String(nt)) => match nt.to_ascii_lowercase().as_str() {
+                        "ex" | "px" => {
+                            expiry = match v_iter.next() {
+                                Some(RespData::Integer(expiry)) => {
+                                    let t = if nt == "ex" {
+                                        Duration::from_secs(expiry.clone() as u64)
+                                    } else {
+                                        Duration::from_millis(expiry.clone() as u64)
+                                    };
+                                    Some(Duration::new(t.as_secs(), t.subsec_millis()))
+                                }
+                                Some(_) => {
+                                    return Err(CommandError::NotValidType("set".into()));
+                                }
+                                None => return Err(CommandError::SyntaxError("set".into())),
+                            };
+                        }
+                        "nx" => todo!(),
+                        "xx" => todo!(),
+                        "keepttl" => todo!(),
+                        _ => return Err(CommandError::SyntaxError("set".into())),
+                    },
                     Some(_) => {
                         return Err(CommandError::NotValidType("set".into()));
                     }
-                    None => None,
-                };
+                    None => {}
+                }
+
+                dbg!(expiry);
 
                 let s = Set { key, value, expiry };
 
@@ -120,6 +142,10 @@ pub fn parse_command(v: Vec<RespData>) -> anyhow::Result<Command, CommandError> 
                 };
 
                 return Ok(Command::Config(s));
+            }
+            "save" => {
+                let o = Save;
+                return Ok(Command::Save(o));
             }
             _ => {}
         }

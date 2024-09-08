@@ -1,7 +1,6 @@
 use crate::{
     cmds::{Command, CommandError, SubCommand},
-    database::ExpiringHashMap,
-    global::LIST,
+    db::{self, ExpiringHashMap},
     parse::parse_command,
     resp::RespError,
     token::Tokenizer,
@@ -18,17 +17,11 @@ use tokio::{
     sync::Mutex,
 };
 
+use crate::global::CONFIG_LIST;
 use crate::resp::RespData;
 
 const CHUNK_SIZE: usize = 16 * 1024;
 const CRLF: &str = "\r\n";
-
-// pub struct Connection<'a> {
-//     pub socket_addr: SocketAddr,
-//     reader: FramedRead<ReadHalf<'a>, LinesCodec>,
-//     writer: FramedWrite<WriteHalf<'a>, LinesCodec>,
-//     buffer: BytesMut,
-// }
 
 pub struct Connection<'a> {
     pub socket_addr: SocketAddr,
@@ -38,18 +31,6 @@ pub struct Connection<'a> {
 }
 
 impl<'a> Connection<'a> {
-    // pub fn new(stream: &'a mut TcpStream, socket_addr: SocketAddr) -> Connection<'a> {
-    //     let (reader, writer) = stream.split();
-    //     let reader = FramedRead::new(reader, LinesCodec::new());
-    //     let writer = FramedWrite::new(writer, LinesCodec::new());
-    //     let c = Self {
-    //         socket_addr,
-    //         reader,
-    //         writer,
-    //         buffer: BytesMut::with_capacity(CHUNK_SIZE),
-    //     };
-    //     c
-    // }
     pub fn new(stream: &'a mut TcpStream, socket_addr: SocketAddr) -> Connection<'a> {
         let (reader, writer) = stream.split();
         let reader = Arc::new(Mutex::new(BufReader::new(reader)));
@@ -62,39 +43,6 @@ impl<'a> Connection<'a> {
         };
         c
     }
-
-    // pub async fn read(&mut self) -> anyhow::Result<Option<RespData>, RespError> {
-    //     loop {
-    //         let mut guard = self.reader.lock().await;
-    //         let num_bytes = guard
-    //             .read_buf(&mut self.buffer)
-    //             .await
-    //             .expect("failed to read from socket");
-    //         drop(guard);
-    //         if num_bytes == 0 {
-    //             if self.buffer.is_empty() {
-    //                 return Ok(None);
-    //             } else {
-    //                 return Err(RespError::Invalid);
-    //             }
-    //         }
-
-    //         let tk = Tokenizer::new(&self.buffer[..num_bytes]);
-    //         if let Ok(data) = RespData::try_from(tk) {
-    //             return Ok(Some(data));
-    //         } else {
-    //             // todo: it must be parse error
-    //             return Err(RespError::Invalid);
-    //         }
-    //     }
-    // }
-
-    // pub async fn write(&mut self, buf: &[u8]) {
-    //     let mut guard = self.writer.lock().await;
-    //     let _ = guard.write_all(buf).await;
-    //     let _ = guard.flush().await;
-    //     drop(guard);
-    // }
 
     pub async fn apply(
         &mut self,
@@ -136,8 +84,6 @@ impl<'a> Connection<'a> {
                             }
                             Command::Get(o) => {
                                 let key = o.key;
-                                // let guard = db.lock().await;
-                                // if db.contains_key(&key).await {
                                 if let Some(value) = db.get(&key).await {
                                     response.push_str(&format!(
                                         "${}{}{}{}",
@@ -149,25 +95,21 @@ impl<'a> Connection<'a> {
                                 } else {
                                     response.push_str(&format!("$-1{}", CRLF));
                                 }
-                                // drop(guard);
                             }
                             Command::Set(o) => {
-                                dbg!(o.clone());
                                 let key = o.key;
                                 let value = o.value;
                                 let expiry = o.expiry;
-                                // let mut guard = db.lock().await;
                                 let mut db = db.clone();
                                 db.insert(key, value, expiry).await;
                                 response.push_str(&format!("+OK{}", CRLF));
                                 drop(db);
-                                dbg!("response = {}", response.clone());
                             }
                             Command::Config(o) => {
                                 dbg!(o.clone());
                                 match o.sub_command {
                                     SubCommand::Get(pattern) => {
-                                        if let Some(res) = LIST.get_val(&pattern) {
+                                        if let Some(res) = CONFIG_LIST.get_val(&pattern) {
                                             dbg!(res);
                                             // *2\r\n$3\r\ndir\r\n$16\r\n/tmp/redis-files\r\n
                                             response.push_str(&format!(
@@ -185,6 +127,10 @@ impl<'a> Connection<'a> {
                                         }
                                     }
                                 }
+                            }
+                            Command::Save(_o) => {
+                                response.push_str(&format!("+OK{}", CRLF));
+                                db::write_to_disk(db.clone()).await.expect("Write failed")
                             }
                         },
                         Err(e) => match e.clone() {

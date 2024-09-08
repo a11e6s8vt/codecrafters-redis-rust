@@ -21,3 +21,6 @@ pub struct Ping {
 pub struct Echo {
     pub value: Option<String>,
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Save;
