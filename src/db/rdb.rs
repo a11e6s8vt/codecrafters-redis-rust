@@ -40,7 +40,7 @@ async fn init_db(file_mode: String) -> anyhow::Result<File, Error> {
         if file_mode == "write".to_owned() {
             return Ok(OpenOptions::new().append(true).open(&rdb_file_p)?);
         } else if file_mode == "read".to_owned() {
-            return Ok(File::open(&rdb_file_p)?);
+            return Ok(OpenOptions::new().read(true).open(&rdb_file_p)?);
         }
     }
     let mut rdb_file = File::create(rdb_file_p)?; // .expect("RDB File creation failed");
