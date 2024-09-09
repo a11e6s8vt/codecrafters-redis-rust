@@ -74,7 +74,6 @@ where
             guard.insert(k, (v, None)).map(|v| v.0)
         };
         *self.size.lock().await += 1;
-        dbg!(self.size.lock().await);
         drop(guard);
         val
     }
@@ -84,7 +83,6 @@ where
         let mut guard = self.hash_map.lock().await;
         let val = if guard.contains_key(&k) {
             let expired = guard.get(&k).and_then(|(x, t)| {
-                dbg!("v = {}, t = {}", x, t);
                 if t.is_some() {
                     if (now - t.unwrap().0) > t.unwrap().1 {
                         Some(true)

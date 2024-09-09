@@ -42,7 +42,7 @@ pub fn parse_command(v: Vec<RespData>) -> anyhow::Result<Command, CommandError> 
                                     } else {
                                         Duration::from_millis(expiry.clone() as u64)
                                     };
-                                    Some(Duration::new(t.as_secs(), t.subsec_millis()))
+                                    Some(Duration::new(t.as_secs(), t.subsec_nanos()))
                                 }
                                 Some(_) => {
                                     return Err(CommandError::NotValidType("set".into()));
