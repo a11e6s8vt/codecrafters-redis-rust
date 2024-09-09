@@ -36,14 +36,15 @@ async fn init_db(file_mode: String) -> anyhow::Result<File, Error> {
     }
 
     let rdb_file_p = PathBuf::from(&rdb_dir).join(rdb_file);
-    if Path::new(&rdb_file_p).exists() {
+    if Path::try_exists(&rdb_file_p)? {
         if file_mode == "write".to_owned() {
             return Ok(OpenOptions::new().append(true).open(&rdb_file_p)?);
         } else if file_mode == "read".to_owned() {
+            println!("READDDD");
             return Ok(OpenOptions::new().read(true).open(&rdb_file_p)?);
         }
     }
-    let mut rdb_file = File::create(rdb_file_p)?; // .expect("RDB File creation failed");
+    let mut rdb_file = File::create(rdb_file_p.clone())?; // .expect("RDB File creation failed");
 
     // MAGIC_STRING
     rdb_file.write_all(&MAGIC_STRING)?;
@@ -60,7 +61,13 @@ async fn init_db(file_mode: String) -> anyhow::Result<File, Error> {
     }
 
     rdb_file.write_all(&metadata)?;
-    Ok(rdb_file)
+    if file_mode == "read".to_owned() {
+        println!("READDDD");
+        drop(rdb_file);
+        return Ok(OpenOptions::new().read(true).open(&rdb_file_p)?);
+    } else {
+        return Ok(rdb_file);
+    }
 }
 
 pub async fn write_to_disk(mut db: ExpiringHashMap<String, String>) -> anyhow::Result<()> {
@@ -118,19 +125,6 @@ fn length_encoded_int(n: usize) -> Vec<u8> {
 }
 
 pub async fn load_from_rdb(mut db: ExpiringHashMap<String, String>) -> anyhow::Result<(), Error> {
-    // let rdb_dir = CONFIG_LIST
-    //     .get_val(&"dir".into())
-    //     .expect("directory name is empty");
-
-    // let rdb_file = CONFIG_LIST
-    //     .get_val(&"dbfilename".into())
-    //     .expect("filename is empty");
-
-    // let rdb_file_p = PathBuf::from(&rdb_dir).join(rdb_file);
-    //let mut f = OpenOptions::new().read(true).open(&rdb_file_p)?;
-    // let file = File::open(rdb_file_p)?;
-    // let file_mmap = unsafe { Mmap::map(&f)? };
-    // let bytes: &[u8] = &file_mmap[..];
     let file = init_db("read".to_string()).await.expect("File init failed");
     let mut reader = BufReader::new(file);
 
