@@ -22,8 +22,8 @@ pub async fn main() -> Result<()> {
 
     log::info!("initialising database files...");
     let config_params = Cli::new(std::env::args());
-    CONFIG_LIST.push(("dir".to_string(), config_params.dir_name));
-    CONFIG_LIST.push(("dbfilename".to_string(), config_params.db_filename));
+    CONFIG_LIST.push(("dir".to_string(), config_params.dir_name.clone()));
+    CONFIG_LIST.push(("dbfilename".to_string(), config_params.db_filename.clone()));
 
     // Create TCP Listener
     let listener = TcpListener::bind("127.0.0.1:6379").await?;
@@ -32,9 +32,11 @@ pub async fn main() -> Result<()> {
     // initialise the DB
     //let db: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
     let db: ExpiringHashMap<String, String> = ExpiringHashMap::new();
-    db::load_from_rdb(db.clone())
-        .await
-        .expect("RDB file read failed");
+    if !(config_params.dir_name.is_empty() && config_params.db_filename.is_empty()) {
+        db::load_from_rdb(db.clone())
+            .await
+            .expect("RDB file read failed");
+    }
     // Handle Multiple Clients in a loop
     loop {
         let (tcp_stream, socket_addr) = listener.accept().await?;
