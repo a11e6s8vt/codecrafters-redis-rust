@@ -35,6 +35,15 @@ pub enum RespData {
     Set(HashSet<RespData>),
 }
 
+// todo:
+// impl PartialEq for RespData {
+//     fn eq(&self, other: &Self) -> bool {}
+
+//     fn ne(&self, other: &Self) -> bool {
+//         !self.eq(other)
+//     }
+// }
+
 impl RespData {
     pub fn valid() -> bool {
         unimplemented!()
@@ -59,7 +68,7 @@ impl<'b> TryFrom<Tokenizer<'b>> for RespData {
             Token::Asterisk => {
                 let mut res: Vec<RespData> = Vec::new();
 
-                let mut array_len = if let Some(Ok(second_token)) = tokens.next() {
+                let array_len = if let Some(Ok(second_token)) = tokens.next() {
                     match second_token {
                         Token::Num(i) => i,
                         _ => return Err(RespError::Invalid),
@@ -82,6 +91,7 @@ impl<'b> TryFrom<Tokenizer<'b>> for RespData {
                                         let word = match t {
                                             Token::Word(w) => w,
                                             Token::Num(n) => n.to_string(),
+                                            Token::Asterisk => "*".to_string(),
                                             _ => return Err(RespError::Invalid),
                                         };
 

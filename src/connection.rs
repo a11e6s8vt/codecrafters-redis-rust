@@ -61,7 +61,7 @@ impl<'a> Connection<'a> {
             println!("{:?}", &tk);
             let mut response = String::new();
             if let Ok(data) = RespData::try_from(tk) {
-                println!("{:?}", &data);
+                println!("data = {:?}", &data);
                 match data {
                     RespData::Array(v) => match parse_command(v) {
                         Ok(res) => match res {
@@ -131,6 +131,21 @@ impl<'a> Connection<'a> {
                             Command::Save(_o) => {
                                 response.push_str(&format!("+OK{}", CRLF));
                                 db::write_to_disk(db.clone()).await.expect("Write failed")
+                            }
+                            Command::Keys(o) => {
+                                let _arg = o.arg;
+                                // *1\r\n$3\r\nfoo\r\n
+                                let result = db::read_rdb().await.expect("RDB file read failed");
+                                response.push_str(&format!("*{}{}", result.len(), CRLF));
+                                for key in result.iter() {
+                                    response.push_str(&format!(
+                                        "${}{}{}{}",
+                                        key.len(),
+                                        CRLF,
+                                        key,
+                                        CRLF
+                                    ));
+                                }
                             }
                         },
                         Err(e) => match e.clone() {

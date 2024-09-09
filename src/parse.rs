@@ -1,12 +1,11 @@
-use std::time::Duration;
+use std::{env::Args, time::Duration};
 
 use crate::{
-    cmds::{Command, CommandError, Config, Echo, Get, Ping, Save, Set, SubCommand},
+    cmds::{Command, CommandError, Config, Echo, Get, Keys, Ping, Save, Set, SubCommand},
     resp::RespData,
 };
 
 pub fn parse_command(v: Vec<RespData>) -> anyhow::Result<Command, CommandError> {
-    dbg!("resp_data parse {:?}", v.clone());
     let mut v_iter = v.iter();
     let cmd_str = if let Some(cmd_str) = v_iter.next() {
         match cmd_str {
@@ -142,6 +141,16 @@ pub fn parse_command(v: Vec<RespData>) -> anyhow::Result<Command, CommandError> 
                 };
 
                 return Ok(Command::Config(s));
+            }
+            "keys" => {
+                if let Some(RespData::String(arg)) = v_iter.next() {
+                    let p = Keys {
+                        arg: arg.to_owned(),
+                    };
+                    return Ok(Command::Keys(p));
+                } else {
+                    return Err(CommandError::SyntaxError("KEYS".into()));
+                }
             }
             "save" => {
                 let o = Save;

@@ -1,4 +1,4 @@
-pub use command::{Echo, Get, Ping, Save, Set};
+pub use command::{Echo, Get, Keys, Ping, Save, Set};
 pub use config::{Config, SubCommand};
 
 mod command;
@@ -12,6 +12,7 @@ pub enum Command {
     Echo(Echo),
     Config(Config),
     Save(Save),
+    Keys(Keys),
 }
 
 #[derive(Debug, Clone, PartialEq)]

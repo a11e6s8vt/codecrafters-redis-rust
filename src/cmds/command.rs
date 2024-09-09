@@ -24,3 +24,8 @@ pub struct Echo {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Save;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Keys {
+    pub arg: String,
+}
