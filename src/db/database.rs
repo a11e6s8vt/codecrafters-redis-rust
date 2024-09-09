@@ -78,7 +78,7 @@ where
         val
     }
 
-    pub async fn get(&self, k: &K) -> Option<V> {
+    pub async fn get(&mut self, k: &K) -> Option<V> {
         let now = Instant::now();
         let mut guard = self.hash_map.lock().await;
         let val = if guard.contains_key(&k) {
@@ -94,6 +94,8 @@ where
                 }
             });
             if expired.is_some_and(|x| x == true) {
+                *self.size.lock().await -= 1;
+                *self.expire_size.lock().await -= 1;
                 guard.remove(&k);
                 None
             } else {

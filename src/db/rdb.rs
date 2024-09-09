@@ -1,4 +1,5 @@
 use super::ExpiringHashMap;
+use crate::cmds::Set;
 use crate::global::CONFIG_LIST;
 use anyhow::Error;
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
@@ -7,6 +8,7 @@ use std::any::Any;
 use std::borrow::Borrow;
 use std::fs::OpenOptions;
 use std::io::{self, BufReader, Cursor, Read};
+use std::time::Duration;
 use std::{
     fs::{self, File},
     io::Write,
@@ -111,8 +113,7 @@ fn length_encoded_int(n: usize) -> Vec<u8> {
     encoded_int
 }
 
-pub async fn read_rdb() -> anyhow::Result<Vec<String>, Error> {
-    let mut result: Vec<String> = Vec::new();
+pub async fn load_from_rdb(mut db: ExpiringHashMap<String, String>) -> anyhow::Result<(), Error> {
     let rdb_dir = CONFIG_LIST
         .get_val(&"dir".into())
         .expect("directory name is empty");
@@ -266,19 +267,52 @@ pub async fn read_rdb() -> anyhow::Result<Vec<String>, Error> {
     // Value
     // =====
     // The value is parsed according to the previously read Value Type
-    let byte = reader.read_u8().unwrap();
-    if byte == 0u8 {
-        let key_len = reader.read_u8().unwrap() as usize;
-        let mut buffer: Vec<u8> = vec![0; key_len]; // Vec::with_capacity(key_len);
-        reader.read_exact(&mut buffer).unwrap();
-        let key = String::from_utf8(buffer).unwrap();
+    let mut key: Option<String> = None;
+    let mut value: Option<String> = None;
+    let mut expiry: Option<Duration> = None;
+    let mut i = 0usize;
+    while i < ht_size {
+        let byte = match reader.read_u8() {
+            Ok(byte) => byte,
+            Err(e) => return Err(e.into()),
+        };
+        let byte_hex = faster_hex::hex_string(&[byte]);
+        match byte_hex.as_str() {
+            "00" => {
+                // key - value pair
+                let key_len = reader.read_u8().unwrap() as usize;
+                let mut buffer: Vec<u8> = vec![0; key_len]; // Vec::with_capacity(key_len);
+                reader.read_exact(&mut buffer).unwrap();
+                key = Some(String::from_utf8(buffer).unwrap());
 
-        result.push(key);
-        let value_len = reader.read_u8().unwrap() as usize;
-        let mut buffer: Vec<u8> = vec![0; value_len]; // Vec::with_capacity(value_len);
-        reader.read_exact(&mut buffer[..]).unwrap();
-        let value = str::from_utf8(&buffer).unwrap();
+                // result.push(key);
+                let value_len = reader.read_u8().unwrap() as usize;
+                let mut buffer: Vec<u8> = vec![0; value_len]; // Vec::with_capacity(value_len);
+                reader.read_exact(&mut buffer).unwrap();
+                value = Some(String::from_utf8(buffer).unwrap());
+                i += 1;
+            }
+            "fc" | "fd" => {
+                // let mut buffer: Vec<u8> = vec![0; 8]; // Vec::with_capacity(key_len);
+                let unix_timestamp = reader.read_u64::<LittleEndian>().unwrap();
+                let mut duration: Duration = Duration::from_millis(0);
+                if &byte_hex == "fc" {
+                    duration = Duration::from_millis(unix_timestamp);
+                } else {
+                    duration = Duration::from_secs(unix_timestamp)
+                }
+                expiry = Some(Duration::new(duration.as_secs(), duration.subsec_nanos()));
+            }
+            "ff" => {
+                println!("EOF = ff");
+                break;
+            }
+            _ => {}
+        }
+        // println!("{:?} {:?} {:?}", key.take(), value.take(), expiry.take());
+        db.insert(key.take().unwrap(), value.take().unwrap(), expiry.take())
+            .await;
     }
 
-    Ok(result)
+    Ok(())
 }

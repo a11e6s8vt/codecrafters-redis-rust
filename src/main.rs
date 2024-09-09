@@ -32,7 +32,9 @@ pub async fn main() -> Result<()> {
     // initialise the DB
     //let db: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
     let db: ExpiringHashMap<String, String> = ExpiringHashMap::new();
-
+    db::load_from_rdb(db.clone())
+        .await
+        .expect("RDB file read failed");
     // Handle Multiple Clients in a loop
     loop {
         let (tcp_stream, socket_addr) = listener.accept().await?;

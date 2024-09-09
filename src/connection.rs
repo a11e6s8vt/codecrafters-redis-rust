@@ -84,6 +84,7 @@ impl<'a> Connection<'a> {
                             }
                             Command::Get(o) => {
                                 let key = o.key;
+                                let mut db = db.clone();
                                 if let Some(value) = db.get(&key).await {
                                     response.push_str(&format!(
                                         "${}{}{}{}",
@@ -135,9 +136,9 @@ impl<'a> Connection<'a> {
                             Command::Keys(o) => {
                                 let _arg = o.arg;
                                 // *1\r\n$3\r\nfoo\r\n
-                                let result = db::read_rdb().await.expect("RDB file read failed");
-                                response.push_str(&format!("*{}{}", result.len(), CRLF));
-                                for key in result.iter() {
+                                response.push_str(&format!("*{}{}", db.get_ht_size().await, CRLF));
+                                let mut db = db.clone();
+                                for (key, _) in db.iter().await {
                                     response.push_str(&format!(
                                         "${}{}{}{}",
                                         key.len(),
