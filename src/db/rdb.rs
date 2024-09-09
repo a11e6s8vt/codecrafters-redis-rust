@@ -20,7 +20,7 @@ const CHUNK_SIZE: usize = 1 * 16;
 // Magic string + RDB version number (ASCII): "REDIS0011".
 const MAGIC_STRING: [u8; 9] = *b"REDIS0011";
 
-async fn init_db() -> anyhow::Result<File, Error> {
+async fn init_db(file_mode: String) -> anyhow::Result<File, Error> {
     let rdb_dir = CONFIG_LIST
         .get_val(&"dir".into())
         .expect("directory name is empty");
@@ -37,7 +37,11 @@ async fn init_db() -> anyhow::Result<File, Error> {
 
     let rdb_file_p = PathBuf::from(&rdb_dir).join(rdb_file);
     if Path::new(&rdb_file_p).exists() {
-        return Ok(OpenOptions::new().append(true).open(&rdb_file_p)?);
+        if file_mode == "write".to_owned() {
+            return Ok(OpenOptions::new().append(true).open(&rdb_file_p)?);
+        } else if file_mode == "read".to_owned() {
+            return Ok(File::open(&rdb_file_p)?);
+        }
     }
     let mut rdb_file = File::create(rdb_file_p)?; // .expect("RDB File creation failed");
 
@@ -60,7 +64,7 @@ async fn init_db() -> anyhow::Result<File, Error> {
 }
 
 pub async fn write_to_disk(mut db: ExpiringHashMap<String, String>) -> anyhow::Result<()> {
-    let mut rdb_file = init_db().await?;
+    let mut rdb_file = init_db("write".to_string()).await?;
 
     // Database Subsection
     let op_code: u8 = 0xFE;
@@ -114,20 +118,20 @@ fn length_encoded_int(n: usize) -> Vec<u8> {
 }
 
 pub async fn load_from_rdb(mut db: ExpiringHashMap<String, String>) -> anyhow::Result<(), Error> {
-    let rdb_dir = CONFIG_LIST
-        .get_val(&"dir".into())
-        .expect("directory name is empty");
+    // let rdb_dir = CONFIG_LIST
+    //     .get_val(&"dir".into())
+    //     .expect("directory name is empty");
 
-    let rdb_file = CONFIG_LIST
-        .get_val(&"dbfilename".into())
-        .expect("filename is empty");
+    // let rdb_file = CONFIG_LIST
+    //     .get_val(&"dbfilename".into())
+    //     .expect("filename is empty");
 
-    let rdb_file_p = PathBuf::from(&rdb_dir).join(rdb_file);
+    // let rdb_file_p = PathBuf::from(&rdb_dir).join(rdb_file);
     //let mut f = OpenOptions::new().read(true).open(&rdb_file_p)?;
-    let file = File::open(rdb_file_p)?;
+    // let file = File::open(rdb_file_p)?;
     // let file_mmap = unsafe { Mmap::map(&f)? };
     // let bytes: &[u8] = &file_mmap[..];
-    // let mut f = File::open("data.bin").unwrap();
+    let file = init_db("read".to_string()).await.expect("File init failed");
     let mut reader = BufReader::new(file);
 
     let mut header = [0; 9]; // The first 9 bytes contain the header.
@@ -157,7 +161,10 @@ pub async fn load_from_rdb(mut db: ExpiringHashMap<String, String>) -> anyhow::R
     //                  0 indicates that an 8 bit integer follows
     //                  1 indicates that a 16 bit integer follows
     //                  2 indicates that a 32 bit integer follows
-    let byte = reader.read_u8().unwrap();
+    let byte = match reader.read_u8() {
+        Ok(byte) => byte,
+        Err(_) => return Ok(()),
+    };
     let mut ht_size: Vec<Box<dyn Any>> = Vec::new();
     match ((byte & 1 << 7) > 0, (byte & 1 << 6) > 0) {
         (false, false) => ht_size.push(Box::new(byte)),
