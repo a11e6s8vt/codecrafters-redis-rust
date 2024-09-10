@@ -22,11 +22,23 @@ pub async fn main() -> Result<()> {
 
     log::info!("initialising database files...");
     let config_params = Cli::new(std::env::args());
+    CONFIG_LIST.push((
+        "bind_address".to_string(),
+        config_params.bind_address.to_string(),
+    ));
+    CONFIG_LIST.push((
+        "listening_port".to_string(),
+        config_params.listening_port.to_string(),
+    ));
     CONFIG_LIST.push(("dir".to_string(), config_params.dir_name.clone()));
     CONFIG_LIST.push(("dbfilename".to_string(), config_params.db_filename.clone()));
 
     // Create TCP Listener
-    let listener = TcpListener::bind("127.0.0.1:6379").await?;
+    let ip_address = format!(
+        "{}:{}",
+        config_params.bind_address, config_params.listening_port
+    );
+    let listener = TcpListener::bind(ip_address).await?;
     log::info!("Listening on port 6379");
 
     // initialise the DB
