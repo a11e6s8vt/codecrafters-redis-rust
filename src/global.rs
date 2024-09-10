@@ -60,4 +60,4 @@ impl<T> GlobalConfig<T> {
     }
 }
 
-pub(crate) static CONFIG_LIST: GlobalConfig<String> = GlobalConfig::new();
+pub static CONFIG_LIST: GlobalConfig<String> = GlobalConfig::new();

@@ -1,21 +1,16 @@
 use super::ExpiringHashMap;
-use crate::cmds::Set;
 use crate::global::CONFIG_LIST;
 use anyhow::Error;
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
-use core::str;
 use std::any::Any;
-use std::borrow::Borrow;
 use std::fs::OpenOptions;
-use std::io::{self, BufReader, Cursor, Read};
+use std::io::{self, BufReader, Read};
 use std::time::Duration;
 use std::{
     fs::{self, File},
     io::Write,
     path::{Path, PathBuf},
 };
-
-const CHUNK_SIZE: usize = 1 * 16;
 
 // Magic string + RDB version number (ASCII): "REDIS0011".
 const MAGIC_STRING: [u8; 9] = *b"REDIS0011";
