@@ -38,7 +38,7 @@ pub struct ExpiringHashMap<K, V> {
 
 impl<K, V> ExpiringHashMap<K, V>
 where
-    K: Clone + Eq + std::hash::Hash,
+    K: Display + Debug + Clone + Eq + std::hash::Hash,
     V: Display + Debug + Clone,
 {
     pub fn new() -> Self {
@@ -64,6 +64,7 @@ where
     }
 
     pub async fn insert(&mut self, k: K, v: V, expiry: Option<Duration>) -> Option<V> {
+        dbg!(k.clone(), v.clone(), expiry.clone());
         let mut guard = self.hash_map.lock().await;
         let val = if expiry.is_some() {
             *self.expire_size.lock().await += 1;
@@ -83,6 +84,7 @@ where
         let mut guard = self.hash_map.lock().await;
         let val = if guard.contains_key(&k) {
             let expired = guard.get(&k).and_then(|(x, t)| {
+                dbg!(x);
                 if t.is_some() {
                     if (now - t.unwrap().0) > t.unwrap().1 {
                         Some(true)

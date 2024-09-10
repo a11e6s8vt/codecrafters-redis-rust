@@ -58,10 +58,8 @@ impl<'a> Connection<'a> {
                 }
             }
             let tk = Tokenizer::new(&self.buffer[..num_bytes]);
-            println!("{:?}", &tk);
             let mut response = String::new();
             if let Ok(data) = RespData::try_from(tk) {
-                println!("data = {:?}", &data);
                 match data {
                     RespData::Array(v) => match parse_command(v) {
                         Ok(res) => match res {

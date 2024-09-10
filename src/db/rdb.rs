@@ -35,7 +35,6 @@ async fn init_db(file_mode: String) -> anyhow::Result<File, Error> {
         if file_mode == "write".to_owned() {
             return Ok(OpenOptions::new().append(true).open(&rdb_file_p)?);
         } else if file_mode == "read".to_owned() {
-            println!("READDDD");
             return Ok(OpenOptions::new().read(true).open(&rdb_file_p)?);
         }
     }
@@ -306,8 +305,10 @@ pub async fn load_from_rdb(mut db: ExpiringHashMap<String, String>) -> anyhow::R
             _ => {}
         }
         // println!("{:?} {:?} {:?}", key.take(), value.take(), expiry.take());
-        db.insert(key.take().unwrap(), value.take().unwrap(), expiry.take())
-            .await;
+        if key.is_some() && value.is_some() {
+            db.insert(key.take().unwrap(), value.take().unwrap(), expiry.take())
+                .await;
+        }
     }
 
     Ok(())

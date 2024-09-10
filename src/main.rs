@@ -1,6 +1,6 @@
 use cli::Cli;
 use client_handler::handle_client;
-use db::ExpiringHashMap;
+use db::{load_from_rdb, ExpiringHashMap};
 use global::CONFIG_LIST;
 use std::io::Result;
 use tokio::net::TcpListener;
@@ -33,7 +33,7 @@ pub async fn main() -> Result<()> {
     //let db: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
     let db: ExpiringHashMap<String, String> = ExpiringHashMap::new();
     if !(config_params.dir_name.is_empty() && config_params.db_filename.is_empty()) {
-        db::load_from_rdb(db.clone())
+        load_from_rdb(db.clone())
             .await
             .expect("RDB file read failed");
     }
