@@ -5,7 +5,7 @@ use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use std::any::Any;
 use std::fs::OpenOptions;
 use std::io::{self, BufReader, Read};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{
     fs::{self, File},
     io::Write,
@@ -289,13 +289,31 @@ pub async fn load_from_rdb(mut db: ExpiringHashMap<String, String>) -> anyhow::R
             }
             "fc" | "fd" => {
                 // let mut buffer: Vec<u8> = vec![0; 8]; // Vec::with_capacity(key_len);
-                let unix_timestamp = reader.read_u64::<LittleEndian>().unwrap();
-                let mut duration: Duration = Duration::from_millis(0);
-                if &byte_hex == "fc" {
-                    duration = Duration::from_millis(unix_timestamp);
+                dbg!(&byte_hex);
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("Time went backwards");
+                dbg!(&byte_hex);
+                let duration = if &byte_hex == "fc" {
+                    let expiry_unixtime = reader.read_u64::<LittleEndian>().unwrap();
+                    let now = now.as_millis() as u64;
+                    if expiry_unixtime > now {
+                        let time_left = expiry_unixtime - now;
+
+                        Duration::from_millis(time_left)
+                    } else {
+                        Duration::from_millis(0)
+                    }
                 } else {
-                    duration = Duration::from_secs(unix_timestamp)
-                }
+                    let expiry_unixtime = reader.read_u32::<LittleEndian>().unwrap() as u64;
+                    let now = now.as_secs();
+                    if expiry_unixtime > now {
+                        let time_left = expiry_unixtime - now;
+                        Duration::from_secs(time_left)
+                    } else {
+                        Duration::from_secs(0)
+                    }
+                };
                 expiry = Some(Duration::new(duration.as_secs(), duration.subsec_nanos()));
             }
             "ff" => {
