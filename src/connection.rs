@@ -1,5 +1,5 @@
 use crate::{
-    cmds::{Command, CommandError, SubCommand},
+    cmds::{Command, CommandError, InfoSubCommand, SubCommand},
     db::{self, ExpiringHashMap},
     parse::parse_command,
     resp::RespError,
@@ -146,6 +146,18 @@ impl<'a> Connection<'a> {
                                     ));
                                 }
                             }
+                            Command::Info(o) => match o.sub_command {
+                                Some(InfoSubCommand::Replication) => {
+                                    response.push_str(&format!(
+                                        "*{}{}{}{}",
+                                        "role:master".len(),
+                                        CRLF,
+                                        "role:master",
+                                        CRLF,
+                                    ));
+                                }
+                                None => {}
+                            },
                         },
                         Err(e) => match e.clone() {
                             CommandError::SyntaxError(n) => {

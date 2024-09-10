@@ -1,7 +1,10 @@
-use std::{env::Args, time::Duration};
+use std::time::Duration;
 
 use crate::{
-    cmds::{Command, CommandError, Config, Echo, Get, Keys, Ping, Save, Set, SubCommand},
+    cmds::{
+        Command, CommandError, Config, Echo, Get, Info, InfoSubCommand, Keys, Ping, Save, Set,
+        SubCommand,
+    },
     resp::RespData,
 };
 
@@ -60,8 +63,6 @@ pub fn parse_command(v: Vec<RespData>) -> anyhow::Result<Command, CommandError> 
                     }
                     None => {}
                 }
-
-                dbg!(expiry);
 
                 let s = Set { key, value, expiry };
 
@@ -151,6 +152,23 @@ pub fn parse_command(v: Vec<RespData>) -> anyhow::Result<Command, CommandError> 
                 } else {
                     return Err(CommandError::SyntaxError("KEYS".into()));
                 }
+            }
+            "info" => {
+                let sub_command = if let Some(RespData::String(sub_command)) = v_iter.next() {
+                    Some(sub_command)
+                } else {
+                    None
+                };
+
+                let s = if sub_command.is_some() {
+                    Info {
+                        sub_command: Some(InfoSubCommand::Replication),
+                    }
+                } else {
+                    Info { sub_command: None }
+                };
+
+                return Ok(Command::Info(s));
             }
             "save" => {
                 let o = Save;
