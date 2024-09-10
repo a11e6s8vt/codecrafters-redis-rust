@@ -149,7 +149,7 @@ impl<'a> Connection<'a> {
                             Command::Info(o) => match o.sub_command {
                                 Some(InfoSubCommand::Replication) => {
                                     response.push_str(&format!(
-                                        "*{}{}{}{}",
+                                        "${}{}{}{}",
                                         "role:master".len(),
                                         CRLF,
                                         "role:master",
