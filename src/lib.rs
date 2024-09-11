@@ -24,7 +24,6 @@ pub async fn start_server(
     // Start logging.
     femme::start();
 
-    log::info!("initialising database files...");
     if bind_address.is_some() {
         CONFIG_LIST.push(("bind_address".to_string(), bind_address.clone().unwrap()));
     }
@@ -50,18 +49,20 @@ pub async fn start_server(
 
     // Create TCP Listener
     if bind_address.clone().is_some() && listening_port.is_some() {
-        let listener_addr = format!("{}:{}", bind_address.unwrap(), listening_port.unwrap());
-        let listener = TcpListener::bind(listener_addr.to_owned()).await?;
-        log::info!("Redis running on {}...", listener_addr);
-
         // initialise the DB
         //let db: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+        log::info!("initialising database files...");
         let db: ExpiringHashMap<String, String> = ExpiringHashMap::new();
         if dir_name.is_some() && dbfilename.is_some() {
             load_from_rdb(db.clone())
                 .await
                 .expect("RDB file read failed");
         }
+
+        let listener_addr = format!("{}:{}", bind_address.unwrap(), listening_port.unwrap());
+        let listener = TcpListener::bind(listener_addr.to_owned()).await?;
+        log::info!("Redis running on {}...", listener_addr);
+
         // Handle Multiple Clients in a loop
         loop {
             let (tcp_stream, socket_addr) = listener.accept().await?;

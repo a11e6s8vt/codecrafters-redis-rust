@@ -23,54 +23,38 @@ impl Cli {
     pub fn new(mut args: Args) -> Self {
         let mut dir_name = None;
         let mut db_filename = None;
-        let mut listening_port = None;
+        let mut listening_port = Some(6379u16);
         let bind_address = Some(String::from("127.0.0.1"));
         let mut replicaof = None;
         while let Some(param) = args.next() {
-            dir_name = if param.eq_ignore_ascii_case("--dir".into()) {
-                if let Some(s) = args.next() {
-                    Some(s)
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            db_filename = if param.eq_ignore_ascii_case("--dbfilename".into()) {
-                if let Some(s) = args.next() {
-                    Some(s)
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            listening_port = if param.eq_ignore_ascii_case("--port".into()) {
-                if let Some(s) = args.next() {
-                    dbg!(s.clone());
-                    if let Ok(port) = s.parse::<u16>() {
-                        Some(port)
-                    } else {
-                        None
+            match param.to_ascii_lowercase().as_str() {
+                "--dir" => {
+                    if let Some(s) = args.next() {
+                        dir_name = Some(s);
                     }
-                } else {
-                    None
                 }
-            } else {
-                Some(6379u16)
-            };
 
-            replicaof = if param.eq_ignore_ascii_case("--replicaof".into()) {
-                if let Some(s) = args.next() {
-                    Some(s)
-                } else {
-                    None
+                "--dbfilename" => {
+                    if let Some(s) = args.next() {
+                        db_filename = Some(s);
+                    }
                 }
-            } else {
-                None
-            };
+
+                "--port" => {
+                    let port = match args.next() {
+                        Some(s) => Some(s.parse::<u16>().unwrap()),
+                        None => Some(6379u16),
+                    };
+                    listening_port = port;
+                }
+
+                "--replicaof" => {
+                    if let Some(s) = args.next() {
+                        replicaof = Some(s);
+                    }
+                }
+                _ => {}
+            }
         }
 
         Self {
