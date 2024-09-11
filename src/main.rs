@@ -15,6 +15,7 @@ mod token;
 #[tokio::main]
 pub async fn main() -> anyhow::Result<(), Error> {
     let config_params = Cli::new(std::env::args());
+    dbg!(config_params.clone());
     let bind_address = config_params.bind_address;
     let listening_port = config_params.listening_port;
     let dir_name = config_params.dir_name;

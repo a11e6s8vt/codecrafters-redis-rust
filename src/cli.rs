@@ -49,6 +49,7 @@ impl Cli {
 
             listening_port = if param.eq_ignore_ascii_case("--port".into()) {
                 if let Some(s) = args.next() {
+                    dbg!(s.clone());
                     if let Ok(port) = s.parse::<u16>() {
                         Some(port)
                     } else {
@@ -58,7 +59,7 @@ impl Cli {
                     None
                 }
             } else {
-                None
+                Some(6379u16)
             };
 
             replicaof = if param.eq_ignore_ascii_case("--replicaof".into()) {
