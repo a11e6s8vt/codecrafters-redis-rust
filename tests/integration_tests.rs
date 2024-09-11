@@ -1,7 +1,5 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
-use std::thread;
-use std::time::Duration;
 
 // Import functions from lib.rs
 fn start_client(message: &[u8]) -> std::io::Result<String> {

@@ -148,31 +148,43 @@ impl<'a> Connection<'a> {
                             }
                             Command::Info(o) => match o.sub_command {
                                 Some(InfoSubCommand::Replication) => {
-                                    response.push_str(&format!(
-                                        "${}{}{}{}",
-                                        "role:master".len(),
-                                        CRLF,
-                                        "role:master",
-                                        CRLF,
-                                    ));
+                                    if let Some(_replicaof) =
+                                        CONFIG_LIST.get_val(&"replicaof".to_string())
+                                    {
+                                        response.push_str(&format!(
+                                            "${}{}{}{}",
+                                            "role:slave".len(),
+                                            CRLF,
+                                            "role:slave",
+                                            CRLF,
+                                        ));
+                                    } else {
+                                        response.push_str(&format!(
+                                            "${}{}{}{}",
+                                            "role:master".len(),
+                                            CRLF,
+                                            "role:master",
+                                            CRLF,
+                                        ));
+                                    }
                                 }
                                 None => {}
                             },
                         },
                         Err(e) => match e.clone() {
-                            CommandError::SyntaxError(n) => {
+                            CommandError::SyntaxError(_n) => {
                                 response.push_str(&format!("-{}{}", &e.message(), CRLF));
                             }
-                            CommandError::WrongNumberOfArguments(n) => {
+                            CommandError::WrongNumberOfArguments(_n) => {
                                 response.push_str(&format!("-{}{}", &e.message(), CRLF));
                             }
                             CommandError::NotSupported => {
                                 response.push_str(&format!("-{}{}", &e.message(), CRLF));
                             }
-                            CommandError::NotValidType(x) => {
+                            CommandError::NotValidType(_x) => {
                                 response.push_str(&format!("-{}{}", &e.message(), CRLF));
                             }
-                            CommandError::UnknownSubCommand(x) => {
+                            CommandError::UnknownSubCommand(_x) => {
                                 response.push_str(&format!("-{}{}", &e.message(), CRLF));
                             }
                         },
