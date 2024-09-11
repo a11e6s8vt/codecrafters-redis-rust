@@ -12,6 +12,7 @@ pub use cli::Cli;
 use client_handler::handle_client;
 pub use db::{load_from_rdb, ExpiringHashMap};
 pub use global::CONFIG_LIST;
+use rand::{distributions::Alphanumeric, Rng};
 use tokio::net::TcpListener;
 
 pub async fn start_server(
@@ -47,8 +48,19 @@ pub async fn start_server(
         CONFIG_LIST.push(("replicaof".to_string(), replicaof.clone().unwrap()));
     }
 
-    // Create TCP Listener
     if bind_address.clone().is_some() && listening_port.is_some() {
+        // Set the replication_id and offset
+        let master_replid: String = rand::thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(40) // 40 character long
+            .map(char::from) // `u8` values to `char`
+            .collect();
+
+        CONFIG_LIST.push(("master_replid".into(), master_replid));
+
+        let master_repl_offset: u64 = 0;
+        CONFIG_LIST.push(("master_repl_offset".into(), master_repl_offset.to_string()));
+
         // initialise the DB
         //let db: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
         log::info!("initialising database files...");
@@ -59,6 +71,7 @@ pub async fn start_server(
                 .expect("RDB file read failed");
         }
 
+        // Create TCP Listener
         let listener_addr = format!("{}:{}", bind_address.unwrap(), listening_port.unwrap());
         let listener = TcpListener::bind(listener_addr.to_owned()).await?;
         log::info!("Redis running on {}...", listener_addr);

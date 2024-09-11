@@ -159,11 +159,29 @@ impl<'a> Connection<'a> {
                                             CRLF,
                                         ));
                                     } else {
+                                        let master_replid = if let Some(master_replid) =
+                                            CONFIG_LIST.get_val(&"master_replid".into())
+                                        {
+                                            master_replid.to_owned()
+                                        } else {
+                                            "".to_string()
+                                        };
+
+                                        let master_repl_offset = if let Some(master_repl_offset) =
+                                            CONFIG_LIST.get_val(&"master_repl_offset".into())
+                                        {
+                                            master_repl_offset.to_owned()
+                                        } else {
+                                            "".to_string()
+                                        };
+
+                                        let data = format!("role:master{CRLF}master_replid:{master_replid}{CRLF}master_repl_offset:{master_repl_offset}");
+
                                         response.push_str(&format!(
                                             "${}{}{}{}",
-                                            "role:master".len(),
+                                            data.len(),
                                             CRLF,
-                                            "role:master",
+                                            data,
                                             CRLF,
                                         ));
                                     }
