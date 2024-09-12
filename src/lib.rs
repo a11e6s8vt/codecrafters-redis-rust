@@ -150,5 +150,11 @@ async fn follower_handshake(mut stream: TcpStream) -> anyhow::Result<()> {
     let mut buffer = [0; 512];
     let n = reader.read(&mut buffer).await?;
     dbg!(String::from_utf8_lossy(&buffer[..n]).to_string());
+
+    let message = b"*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n";
+    writer.write_all(message).await?;
+    let mut buffer = [0; 512];
+    let n = reader.read(&mut buffer).await?;
+    dbg!(String::from_utf8_lossy(&buffer[..n]).to_string());
     Ok(())
 }
