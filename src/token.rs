@@ -19,6 +19,7 @@ pub enum Token {
     EqualSign,
     Tilde,
     GreaterThan,
+    Question,
     Num(i64),
     BigNum(BigInt),
     Word(String),
@@ -49,7 +50,13 @@ impl<'b> Iterator for Tokenizer<'b> {
                 '\n' | '\r' => {}
                 ':' => return Some(Ok(Token::Colon)),
                 '_' => return Some(Ok(Token::Underscore)),
-                '-' => return Some(Ok(Token::Minus)),
+                '-' => {
+                    if let Some(num) = negative_num_token(&mut self.it) {
+                        return Some(Ok(Token::Num(-num)));
+                    } else {
+                        return Some(Ok(Token::Minus));
+                    }
+                }
                 '+' => return Some(Ok(Token::Plus)),
                 '*' => return Some(Ok(Token::Asterisk)),
                 '$' => return Some(Ok(Token::Dollar)),
@@ -60,6 +67,7 @@ impl<'b> Iterator for Tokenizer<'b> {
                 '=' => return Some(Ok(Token::EqualSign)),
                 '~' => return Some(Ok(Token::Tilde)),
                 '>' => return Some(Ok(Token::GreaterThan)),
+                '?' => return Some(Ok(Token::Question)),
                 v if v.is_ascii_digit() => {
                     return Some(Ok(Token::Num(num_token(&mut self.it, c as char))))
                 }
@@ -71,6 +79,32 @@ impl<'b> Iterator for Tokenizer<'b> {
         }
         None
     }
+}
+
+fn negative_num_token(it: &mut IT) -> Option<i64> {
+    if let Some(n) = it.peek() {
+        if !n.is_ascii_digit() {
+            return None;
+        }
+    }
+
+    let mut num: i64 = 0;
+
+    if let Some(c) = it.next() {
+        num = c as i64 - 48;
+    }
+
+    while let Some(c) = it.peek() {
+        if c.is_digit(10) {
+            num = num * 10 + *c as i64 - 48;
+        } else {
+            return Some(num);
+        }
+
+        it.next();
+    }
+
+    Some(num)
 }
 
 fn num_token(it: &mut IT, c: char) -> i64 {

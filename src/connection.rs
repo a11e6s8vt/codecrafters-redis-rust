@@ -58,6 +58,7 @@ impl<'a> Connection<'a> {
                 }
             }
             let tk = Tokenizer::new(&self.buffer[..num_bytes]);
+            dbg!(&tk);
             let mut response = String::new();
             if let Ok(data) = RespData::try_from(tk) {
                 dbg!(&data);
@@ -209,6 +210,22 @@ impl<'a> Connection<'a> {
                                     }
                                     _ => {}
                                 }
+                            }
+                            Command::Psync(o) => {
+                                let args = o.args;
+                                dbg!(&args);
+                                let mut args_iter = args.iter();
+                                if args_iter.next() == Some(&"?".to_string())
+                                    && args_iter.next() == Some(&"-1".to_string())
+                                {
+                                    let repl_id = CONFIG_LIST
+                                        .get_val(&"master_replid".to_string())
+                                        .expect("Expect a valid replication id");
+
+                                    response
+                                        .push_str(&format!("+FULLRESYNC {} 0{}", repl_id, CRLF));
+                                }
+                                dbg!(&response);
                             }
                         },
                         Err(e) => match e.clone() {

@@ -34,3 +34,8 @@ pub struct Keys {
 pub struct Replconf {
     pub args: Vec<String>,
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Psync {
+    pub args: Vec<String>,
+}
