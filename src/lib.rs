@@ -54,12 +54,14 @@ pub async fn start_server(
     if bind_address.is_some() && listening_port.is_some() {
         // initialise the DB
         //let db: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
-        log::info!("initialising database files...");
         let db: ExpiringHashMap<String, String> = ExpiringHashMap::new();
 
-        if CONFIG_LIST.get_val(&"dir_name".to_string()).is_some()
-            && CONFIG_LIST.get_val(&"dbfilename".to_string()).is_some()
-        {
+        if dir_name.is_some() && dbfilename.is_some() {
+            log::info!(
+                "initialising database from rdb file {}/{}..",
+                dir_name.unwrap(),
+                dbfilename.unwrap()
+            );
             load_from_rdb(db.clone())
                 .await
                 .expect("RDB file read failed");
