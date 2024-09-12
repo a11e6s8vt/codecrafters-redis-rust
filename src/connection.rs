@@ -60,6 +60,7 @@ impl<'a> Connection<'a> {
             let tk = Tokenizer::new(&self.buffer[..num_bytes]);
             let mut response = String::new();
             if let Ok(data) = RespData::try_from(tk) {
+                dbg!(&data);
                 match data {
                     RespData::Array(v) => match parse_command(v) {
                         Ok(res) => match res {
@@ -188,6 +189,27 @@ impl<'a> Connection<'a> {
                                 }
                                 None => {}
                             },
+                            Command::Replconf(o) => {
+                                let args = o.args;
+                                dbg!(args.clone());
+                                let mut args_iter = args.iter();
+                                let first = args_iter.next().expect("First cannot be empty");
+                                match first.as_str() {
+                                    "capa" => {
+                                        if args_iter.next() == Some(&"psync2".to_string()) {
+                                            response.push_str(&format!("+OK{}", CRLF))
+                                        }
+                                    }
+                                    "listening-port" => {
+                                        let port =
+                                            args_iter.next().expect("Expect a valid port number");
+                                        if let Ok(port) = port.parse::<u16>() {
+                                            response.push_str(&format!("+OK{}", CRLF));
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
                         },
                         Err(e) => match e.clone() {
                             CommandError::SyntaxError(_n) => {

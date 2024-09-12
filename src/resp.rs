@@ -63,6 +63,7 @@ impl<'b> TryFrom<Tokenizer<'b>> for RespData {
         } else {
             return Err(RespError::Invalid);
         };
+        dbg!(first_token.clone());
 
         match first_token {
             Token::Asterisk => {
@@ -79,6 +80,7 @@ impl<'b> TryFrom<Tokenizer<'b>> for RespData {
 
                 while let Some(tk) = tokens.next() {
                     if let Ok(token) = tk {
+                        dbg!(token.clone());
                         match token {
                             Token::Dollar => {
                                 if let Some(Ok(t)) = tokens.next() {
@@ -88,18 +90,46 @@ impl<'b> TryFrom<Tokenizer<'b>> for RespData {
                                     };
 
                                     if let Some(Ok(t)) = tokens.next() {
-                                        let word = match t {
+                                        let mut word = match t {
                                             Token::Word(w) => w,
                                             Token::Num(n) => n.to_string(),
                                             Token::Asterisk => "*".to_string(),
+                                            Token::Minus => "-".to_string(),
                                             _ => return Err(RespError::Invalid),
                                         };
+                                        // Special case - "listening-port"
+                                        if word.as_str() == "listening" {
+                                            if let Some(RespData::String(kw)) = res.last() {
+                                                if kw.as_str() == "REPLCONF" {
+                                                    let (token1, token2) =
+                                                        (tokens.next(), tokens.next());
+                                                    if let Some(Ok(Token::Minus)) = token1 {
+                                                        if let Some(Ok(Token::Word(t))) = token2 {
+                                                            if t.as_str() == "port" {
+                                                                word = "listening-port".to_string();
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
 
-                                        // if word.to_ascii_lowercase() == "px" {
-                                        //     array_len -= 1;
-                                        //     continue;
-                                        // }
+                                        // Special case - "psync2" - alphanumeric
+                                        // todo: rewrite tokenizer to handle alphanumeric
+                                        if word.as_str() == "psync" {
+                                            if let Some(RespData::String(kw)) = res.first() {
+                                                if kw.as_str() == "REPLCONF" {
+                                                    let token1 = tokens.next();
+                                                    if let Some(Ok(Token::Num(n))) = token1 {
+                                                        if n == 2 {
+                                                            word = "psync2".to_string();
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
 
+                                        dbg!(word.clone());
                                         if word.len() == token_len as usize {
                                             if let Ok(n) = word.parse::<i64>() {
                                                 res.push(RespData::Integer(n));

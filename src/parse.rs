@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use crate::{
     cmds::{
-        Command, CommandError, Config, Echo, Get, Info, InfoSubCommand, Keys, Ping, Save, Set,
-        SubCommand,
+        Command, CommandError, Config, Echo, Get, Info, InfoSubCommand, Keys, Ping, Replconf, Save,
+        Set, SubCommand,
     },
     resp::RespData,
 };
@@ -174,6 +174,34 @@ pub fn parse_command(v: Vec<RespData>) -> anyhow::Result<Command, CommandError> 
                 let o = Save;
                 return Ok(Command::Save(o));
             }
+            "replconf" => match v_iter.next() {
+                Some(RespData::String(s)) => match s.as_str() {
+                    "listening-port" => {
+                        let port = if let Some(RespData::Integer(port)) = v_iter.next() {
+                            port
+                        } else {
+                            return Err(CommandError::NotValidType("replconf".into()));
+                        };
+
+                        if v_iter.next().is_some() {
+                            return Err(CommandError::WrongNumberOfArguments("replconf".into()));
+                        }
+                        return Ok(Command::Replconf(Replconf {
+                            args: vec!["listening-port".into(), port.to_string()],
+                        }));
+                    }
+                    "capa" => {
+                        let mut args: Vec<String> = vec!["capa".into()];
+                        if let Some(RespData::String(s)) = v_iter.next() {
+                            args.push(s.to_string());
+                        }
+                        return Ok(Command::Replconf(Replconf { args }));
+                    }
+                    _ => {}
+                },
+                Some(_) => {}
+                None => todo!(),
+            },
             _ => {}
         }
     }

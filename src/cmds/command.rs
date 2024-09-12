@@ -29,3 +29,8 @@ pub struct Save;
 pub struct Keys {
     pub arg: String,
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Replconf {
+    pub args: Vec<String>,
+}
