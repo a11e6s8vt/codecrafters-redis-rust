@@ -11,6 +11,6 @@ pub async fn handle_client(
     db: ExpiringHashMap<String, String>,
 ) -> anyhow::Result<(), Error> {
     let mut conn = Connection::new(&mut tcp_stream, socket_addr);
-    let _ = conn.apply(db).await;
+    let _ = conn.handle(db).await;
     Ok(())
 }

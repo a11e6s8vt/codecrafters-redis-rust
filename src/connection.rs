@@ -44,7 +44,7 @@ impl<'a> Connection<'a> {
         c
     }
 
-    pub async fn apply(
+    pub async fn handle(
         &mut self,
         db: ExpiringHashMap<String, String>,
     ) -> anyhow::Result<(), RespError> {
