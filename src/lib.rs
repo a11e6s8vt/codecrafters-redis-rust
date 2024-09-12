@@ -8,6 +8,9 @@ mod parse;
 mod resp;
 mod token;
 
+use std::sync::Arc;
+
+use anyhow::Ok;
 pub use cli::Cli;
 use client_handler::handle_client;
 pub use db::{load_from_rdb, ExpiringHashMap};
@@ -16,7 +19,7 @@ pub use global::CONFIG_LIST;
 use rand::{distributions::Alphanumeric, Rng};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
 };
 
 pub async fn start_server(
@@ -121,13 +124,31 @@ async fn handle_follower() {
     };
 
     tokio::spawn(async move {
-        let mut stream = tokio::net::TcpStream::connect(leader_addr).await.unwrap();
-        // Hashshake
-        let message = b"*1\r\n$4\r\nPING\r\n";
-        stream.write_all(message).await;
-
-        let mut buffer = [0; 512];
-        let n = stream.read(&mut buffer).await.unwrap();
-        println!("{}", String::from_utf8_lossy(&buffer[..n]).to_string())
+        let stream = TcpStream::connect(leader_addr).await.unwrap();
+        follower_handshake(stream).await;
     });
+}
+
+async fn follower_handshake(mut stream: TcpStream) -> anyhow::Result<()> {
+    let (mut reader, mut writer) = stream.split();
+    // Hashshake
+    let message = b"*1\r\n$4\r\nPING\r\n";
+    writer.write_all(message).await?;
+
+    let mut buffer = [0; 512];
+    let n = reader.read(&mut buffer).await?;
+    dbg!(String::from_utf8_lossy(&buffer[..n]).to_string());
+
+    let message = b"*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$4\r\n6380\r\n";
+    writer.write_all(message).await?;
+    let mut buffer = [0; 512];
+    let n = reader.read(&mut buffer).await?;
+    dbg!(String::from_utf8_lossy(&buffer[..n]).to_string());
+
+    let message = b"*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n";
+    writer.write_all(message).await?;
+    let mut buffer = [0; 512];
+    let n = reader.read(&mut buffer).await?;
+    dbg!(String::from_utf8_lossy(&buffer[..n]).to_string());
+    Ok(())
 }
