@@ -59,7 +59,7 @@ impl<'a> Connection<'a> {
             }
             let tk = Tokenizer::new(&self.buffer[..num_bytes]);
             dbg!(&tk);
-            let mut response = String::new();
+            let mut responses: Vec<Vec<u8>> = Vec::new();
             if let Ok(data) = RespData::try_from(tk) {
                 dbg!(&data);
                 match data {
@@ -67,34 +67,50 @@ impl<'a> Connection<'a> {
                         Ok(res) => match res {
                             Command::Ping(o) => {
                                 if o.value.is_some() {
-                                    response.push_str(&format!("+{}{}", o.value.unwrap(), CRLF));
+                                    responses.push(
+                                        format!("+{}{}", o.value.unwrap(), CRLF)
+                                            .as_bytes()
+                                            .to_vec(),
+                                    );
                                 } else {
-                                    response.push_str(&format!("+PONG{}", CRLF));
+                                    responses.push(format!("+PONG{}", CRLF).as_bytes().to_vec());
                                 }
                             }
                             Command::Echo(o) => {
                                 if o.value.is_some() {
-                                    response.push_str(&format!("+{}{}", o.value.unwrap(), CRLF));
+                                    responses.push(
+                                        format!("+{}{}", o.value.unwrap(), CRLF)
+                                            .as_bytes()
+                                            .to_vec(),
+                                    );
                                 } else {
-                                    response.push_str(&format!(
+                                    responses.push(
+                                        format!(
                                         "-Error ERR wrong number of arguments for 'echo' command{}",
                                         CRLF
-                                    ));
+                                    )
+                                        .as_bytes()
+                                        .to_vec(),
+                                    );
                                 }
                             }
                             Command::Get(o) => {
                                 let key = o.key;
                                 let mut db = db.clone();
                                 if let Some(value) = db.get(&key).await {
-                                    response.push_str(&format!(
-                                        "${}{}{}{}",
-                                        &value.len().to_string(),
-                                        CRLF,
-                                        &value,
-                                        CRLF
-                                    ));
+                                    responses.push(
+                                        format!(
+                                            "${}{}{}{}",
+                                            &value.len().to_string(),
+                                            CRLF,
+                                            &value,
+                                            CRLF
+                                        )
+                                        .as_bytes()
+                                        .to_vec(),
+                                    );
                                 } else {
-                                    response.push_str(&format!("$-1{}", CRLF));
+                                    responses.push(format!("$-1{}", CRLF).as_bytes().to_vec());
                                 }
                             }
                             Command::Set(o) => {
@@ -103,7 +119,7 @@ impl<'a> Connection<'a> {
                                 let expiry = o.expiry;
                                 let mut db = db.clone();
                                 db.insert(key, value, expiry).await;
-                                response.push_str(&format!("+OK{}", CRLF));
+                                responses.push(format!("+OK{}", CRLF).as_bytes().to_vec());
                                 drop(db);
                             }
                             Command::Config(o) => {
@@ -113,30 +129,34 @@ impl<'a> Connection<'a> {
                                         if let Some(res) = CONFIG_LIST.get_val(&pattern) {
                                             dbg!(res);
                                             // *2\r\n$3\r\ndir\r\n$16\r\n/tmp/redis-files\r\n
-                                            response.push_str(&format!(
-                                                "*2{}${}{}{}{}${}{}{}{}",
-                                                CRLF,
-                                                pattern.len(),
-                                                CRLF,
-                                                pattern,
-                                                CRLF,
-                                                res.len(),
-                                                CRLF,
-                                                res,
-                                                CRLF
-                                            ));
+                                            responses.push(
+                                                format!(
+                                                    "*2{}${}{}{}{}${}{}{}{}",
+                                                    CRLF,
+                                                    pattern.len(),
+                                                    CRLF,
+                                                    pattern,
+                                                    CRLF,
+                                                    res.len(),
+                                                    CRLF,
+                                                    res,
+                                                    CRLF
+                                                )
+                                                .as_bytes()
+                                                .to_vec(),
+                                            );
                                         }
                                     }
                                 }
                             }
                             Command::Save(_o) => {
-                                response.push_str(&format!("+OK{}", CRLF));
+                                responses.push(format!("+OK{}", CRLF).as_bytes().to_vec());
                                 db::write_to_disk(db.clone()).await.expect("Write failed")
                             }
                             Command::Keys(o) => {
                                 let _arg = o.arg;
                                 // *1\r\n$3\r\nfoo\r\n
-                                response.push_str(&format!("*{}{}", db.get_ht_size().await, CRLF));
+                                let mut response = format!("*{}{}", db.get_ht_size().await, CRLF);
                                 let mut db = db.clone();
                                 for (key, _) in db.iter().await {
                                     response.push_str(&format!(
@@ -147,19 +167,24 @@ impl<'a> Connection<'a> {
                                         CRLF
                                     ));
                                 }
+                                responses.push(response.as_bytes().to_vec());
                             }
                             Command::Info(o) => match o.sub_command {
                                 Some(InfoSubCommand::Replication) => {
                                     if let Some(_replicaof) =
                                         CONFIG_LIST.get_val(&"replicaof".to_string())
                                     {
-                                        response.push_str(&format!(
-                                            "${}{}{}{}",
-                                            "role:slave".len(),
-                                            CRLF,
-                                            "role:slave",
-                                            CRLF,
-                                        ));
+                                        responses.push(
+                                            format!(
+                                                "${}{}{}{}",
+                                                "role:slave".len(),
+                                                CRLF,
+                                                "role:slave",
+                                                CRLF,
+                                            )
+                                            .as_bytes()
+                                            .to_vec(),
+                                        );
                                     } else {
                                         let master_replid = if let Some(master_replid) =
                                             CONFIG_LIST.get_val(&"master_replid".into())
@@ -179,13 +204,11 @@ impl<'a> Connection<'a> {
 
                                         let data = format!("role:master{CRLF}master_replid:{master_replid}{CRLF}master_repl_offset:{master_repl_offset}");
 
-                                        response.push_str(&format!(
-                                            "${}{}{}{}",
-                                            data.len(),
-                                            CRLF,
-                                            data,
-                                            CRLF,
-                                        ));
+                                        responses.push(
+                                            format!("${}{}{}{}", data.len(), CRLF, data, CRLF,)
+                                                .as_bytes()
+                                                .to_vec(),
+                                        );
                                     }
                                 }
                                 None => {}
@@ -198,14 +221,16 @@ impl<'a> Connection<'a> {
                                 match first.as_str() {
                                     "capa" => {
                                         if args_iter.next() == Some(&"psync2".to_string()) {
-                                            response.push_str(&format!("+OK{}", CRLF))
+                                            responses
+                                                .push(format!("+OK{}", CRLF).as_bytes().to_vec())
                                         }
                                     }
                                     "listening-port" => {
                                         let port =
                                             args_iter.next().expect("Expect a valid port number");
                                         if let Ok(port) = port.parse::<u16>() {
-                                            response.push_str(&format!("+OK{}", CRLF));
+                                            responses
+                                                .push(format!("+OK{}", CRLF).as_bytes().to_vec());
                                         }
                                     }
                                     _ => {}
@@ -222,27 +247,48 @@ impl<'a> Connection<'a> {
                                         .get_val(&"master_replid".to_string())
                                         .expect("Expect a valid replication id");
 
-                                    response
-                                        .push_str(&format!("+FULLRESYNC {} 0{}", repl_id, CRLF));
+                                    responses.push(
+                                        format!("+FULLRESYNC {} 0{}", repl_id, CRLF)
+                                            .as_bytes()
+                                            .to_vec(),
+                                    );
+                                    let rdb_contents = [
+                                        82, 69, 68, 73, 83, 48, 48, 49, 49, 250, 9, 114, 101, 100,
+                                        105, 115, 45, 118, 101, 114, 5, 55, 46, 50, 46, 48, 250,
+                                        10, 114, 101, 100, 105, 115, 45, 98, 105, 116, 115, 192,
+                                        64, 250, 5, 99, 116, 105, 109, 101, 194, 5, 28, 228, 102,
+                                        250, 8, 117, 115, 101, 100, 45, 109, 101, 109, 194, 184,
+                                        75, 14, 0, 250, 8, 97, 111, 102, 45, 98, 97, 115, 101, 192,
+                                        0, 255, 187, 243, 46, 0, 102, 82, 8, 22,
+                                    ];
+                                    let mut res = format!("${}{}", rdb_contents.len(), CRLF)
+                                        .as_bytes()
+                                        .to_vec();
+                                    res.extend(rdb_contents);
+                                    responses.push(res);
                                 }
-                                dbg!(&response);
                             }
                         },
                         Err(e) => match e.clone() {
                             CommandError::SyntaxError(_n) => {
-                                response.push_str(&format!("-{}{}", &e.message(), CRLF));
+                                responses
+                                    .push(format!("-{}{}", &e.message(), CRLF).as_bytes().to_vec());
                             }
                             CommandError::WrongNumberOfArguments(_n) => {
-                                response.push_str(&format!("-{}{}", &e.message(), CRLF));
+                                responses
+                                    .push(format!("-{}{}", &e.message(), CRLF).as_bytes().to_vec());
                             }
                             CommandError::NotSupported => {
-                                response.push_str(&format!("-{}{}", &e.message(), CRLF));
+                                responses
+                                    .push(format!("-{}{}", &e.message(), CRLF).as_bytes().to_vec());
                             }
                             CommandError::NotValidType(_x) => {
-                                response.push_str(&format!("-{}{}", &e.message(), CRLF));
+                                responses
+                                    .push(format!("-{}{}", &e.message(), CRLF).as_bytes().to_vec());
                             }
                             CommandError::UnknownSubCommand(_x) => {
-                                response.push_str(&format!("-{}{}", &e.message(), CRLF));
+                                responses
+                                    .push(format!("-{}{}", &e.message(), CRLF).as_bytes().to_vec());
                             }
                         },
                     },
@@ -253,7 +299,9 @@ impl<'a> Connection<'a> {
                 return Err(RespError::Invalid);
             }
             let mut guard = self.writer.lock().await;
-            let _ = guard.write_all(response.as_bytes()).await;
+            for content in responses {
+                let _ = guard.write_all(&content).await;
+            }
             let _ = guard.flush().await;
             drop(guard);
             self.buffer.clear();

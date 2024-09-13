@@ -45,16 +45,7 @@ pub async fn main() -> anyhow::Result<(), Error> {
     //     None => {
     //         // Leader
     //         // Set the replication_id and offset
-    //         let master_replid: String = rand::thread_rng()
-    //             .sample_iter(&Alphanumeric)
-    //             .take(40) // 40 character long
-    //             .map(char::from) // `u8` values to `char`
-    //             .collect();
 
-    //         CONFIG_LIST.push(("master_replid".into(), master_replid));
-
-    //         let master_repl_offset: u64 = 0;
-    //         CONFIG_LIST.push(("master_repl_offset".into(), master_repl_offset.to_string()));
     //     }
     // }
 
