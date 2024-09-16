@@ -95,7 +95,6 @@ impl Connection {
             tokio::select! {
                 //while let Ok(num_bytes) = self.stream.read_buf(&mut self.buffer).await {
                 Some(msg) = rx.recv() => {
-                    dbg!(msg.clone());
                     self.write(vec![msg]).await;
                 }
                 network_read_result = self.stream.read_buf(&mut self.buffer) => {
@@ -226,9 +225,10 @@ impl Connection {
                                             }
                                             Command::Info(o) => match o.sub_command {
                                                 Some(InfoSubCommand::Replication) => {
-                                                    if let Some(_replicaof) =
-                                                        STATE.get_val(&"replicaof".to_string())
+                                                    if let Some(leader_addr) =
+                                                        STATE.get_val(&"LEADER".to_string())
                                                     {
+                                                        dbg!(leader_addr);
                                                         responses.push(
                                                             format!(
                                                                 "${}{}{}{}",

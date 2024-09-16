@@ -305,19 +305,16 @@ pub async fn start_server(
 }
 
 async fn follower_thread(leader_addr: String, store: KeyValueStore<String, String>) {
-    let mut stream = Arc::new(Mutex::new(TcpStream::connect(leader_addr).await.unwrap()));
+    let stream = Arc::new(Mutex::new(TcpStream::connect(leader_addr).await.unwrap()));
     let stream_1 = stream.clone();
 
     follower_handshake(stream.clone()).await;
-    // let n = reader.read(&mut buffer).await?;
-    // dbg!(String::from_utf8_lossy(&buffer[..n]).to_string());
 
     let mut stream = stream_1.lock().await;
     let (mut reader, mut writer) = stream.split();
     loop {
         let mut buffer = BytesMut::with_capacity(16 * 1024);
         if let Ok(n) = reader.read_buf(&mut buffer).await {
-            println!("{:?}", &buffer);
             let cmd_network = buffer[..n].to_vec();
             if let Ok(tk) = Tokenizer::new(&cmd_network) {
                 let mut responses: Vec<Vec<u8>> = Vec::new();
