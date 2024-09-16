@@ -1,14 +1,12 @@
 use anyhow::Error;
-use global::CONFIG_LIST;
-use rand::{distributions::Alphanumeric, Rng};
 use redis_starter_rust::start_server;
 use redis_starter_rust::Cli;
+use redis_starter_rust::Request;
 
 mod cli;
-mod client_handler;
 mod cmds;
 mod connection;
-mod db;
+mod database;
 mod global;
 mod parse;
 mod resp;
@@ -31,23 +29,5 @@ pub async fn main() -> anyhow::Result<(), Error> {
         replicaof,
     )
     .await;
-    // tokio::spawn(start_server());
-
-    // let replicaof = CONFIG_LIST.get_val(&"replicaof".to_string());
-    // match replicaof {
-    //     Some(val) => {
-    //         // Follower
-    //         let ip_and_port: Vec<&str> = val.split_whitespace().collect();
-    //         if ip_and_port.len() > 2 {
-    //             panic!("Wrong number of arguments in leader connection string");
-    //         }
-    //     }
-    //     None => {
-    //         // Leader
-    //         // Set the replication_id and offset
-
-    //     }
-    // }
-
     Ok(())
 }

@@ -94,7 +94,6 @@ impl<'b> TryFrom<Tokenizer<'b>> for RespData {
                                             Token::Word(w) => w,
                                             Token::Num(n) => n.to_string(),
                                             Token::Asterisk => "*".to_string(),
-                                            // Token::Minus => "-".to_string(),
                                             Token::Question => "?".to_string(),
                                             _ => return Err(RespError::Invalid),
                                         };

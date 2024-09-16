@@ -1,26 +1,244 @@
 mod cli;
-mod client_handler;
 mod cmds;
 mod connection;
-mod db;
+mod database;
 mod global;
 mod parse;
 mod resp;
 mod token;
 
-use std::sync::Arc;
-
-use anyhow::Ok;
-pub use cli::Cli;
-use client_handler::handle_client;
-pub use db::{load_from_rdb, ExpiringHashMap};
-pub use global::CONFIG_LIST;
-
-use rand::{distributions::Alphanumeric, Rng};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+use std::{
+    any::Any, collections::HashMap, future::Future, io, net::SocketAddr, ops::Deref, pin::Pin,
+    process::Output, sync::Arc,
 };
+
+use bytes::BytesMut;
+pub use cli::Cli;
+use cmds::{Command, CommandError, InfoSubCommand, SubCommand};
+use connection::Connection;
+use database::Shared;
+pub use database::{load_from_rdb, KeyValueStore};
+pub use global::STATE;
+
+use parse::parse_command;
+use rand::{distributions::Alphanumeric, Rng};
+use resp::{RespData, RespError};
+use serde_json::{from_slice, to_vec};
+use std::error::Error;
+use token::Tokenizer;
+use tokio::{
+    fs::read,
+    io::{AsyncReadExt, AsyncWriteExt, BufWriter},
+    net::{TcpListener, TcpStream},
+    sync::{mpsc, Mutex},
+};
+
+const CHUNK_SIZE: usize = 16 * 1024;
+const CRLF: &str = "\r\n";
+trait RedisInstance: Any + Send + Sync {
+    fn run(&self) -> Pin<Box<dyn Future<Output = ()> + '_>>;
+}
+
+pub struct Follower {
+    pub bind_address: String,
+    pub listening_port: u16,
+    pub leader_addr: String,
+}
+
+impl Follower {
+    pub fn new(
+        bind_address: Option<String>,
+        listening_port: Option<u16>,
+        leader_addr: Option<String>,
+    ) -> Self {
+        let bind_address = if bind_address.is_some() {
+            bind_address.unwrap()
+        } else {
+            "127.0.0.1".to_string()
+        };
+
+        let listening_port = if listening_port.is_some() {
+            listening_port.unwrap()
+        } else {
+            panic!("Port cannot be empty!");
+        };
+
+        let leader_addr = if leader_addr.is_some() {
+            leader_addr.unwrap()
+        } else {
+            panic!("Leader address (--replicaof) cannot be empty");
+        };
+
+        Self {
+            bind_address,
+            listening_port,
+            leader_addr,
+        }
+    }
+}
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Debug)]
+pub enum Request {
+    Get(String),
+    Set(String, String),
+    Delete(String),
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub enum Response {
+    Value(Option<String>),
+    Acknowledged,
+    Error(String),
+}
+
+impl<'a> RedisInstance for Follower {
+    fn run(&self) -> Pin<Box<dyn Future<Output = ()> + '_>> {
+        Box::pin(async {
+            // initialise the DB
+            //let db: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+            let kv_store: KeyValueStore<String, String> = KeyValueStore::new();
+            let state = Arc::new(Mutex::new(Shared::new()));
+
+            // Create TCP Listener
+            let listener_addr = format!("{}:{}", self.bind_address, self.listening_port);
+            let listener = TcpListener::bind(listener_addr.to_owned())
+                .await
+                .expect("Binding to listener address failed!");
+            log::info!("Follower running on {}...", listener_addr);
+
+            let kv_store_follower = kv_store.clone();
+
+            let leader_addr = self.leader_addr.clone();
+            let kv_store_follower = kv_store_follower.clone();
+            tokio::spawn(async { follower_thread(leader_addr, kv_store_follower).await });
+
+            let kv_store_client = kv_store.clone();
+            // Handle Multiple Clients in a loop
+            loop {
+                // it's a follower instance
+
+                let (tcp_stream, socket_addr) = listener
+                    .accept()
+                    .await
+                    .expect("Accepting connection failed");
+                log::info!(
+                    "Follower: Accepted connection from {}",
+                    socket_addr.ip().to_string()
+                );
+                let kv_store_client = kv_store_client.clone();
+                let state = Arc::clone(&state);
+                // tokio::spawn(handle_client(tcp_stream, socket_addr, kv_store, None));
+                tokio::spawn(async move {
+                    let mut conn = Connection::new(state, tcp_stream, socket_addr);
+                    let _ = conn.handle(kv_store_client, None).await;
+                });
+            }
+        })
+    }
+}
+
+pub struct Leader {
+    pub bind_address: String,
+    pub listening_port: u16,
+    pub dir_name: Option<String>,
+    pub dbfilename: Option<String>,
+    pub peers: Vec<Follower>,
+}
+
+impl Leader {
+    pub fn new(
+        bind_address: Option<String>,
+        listening_port: Option<u16>,
+        dir_name: Option<String>,
+        dbfilename: Option<String>,
+    ) -> Self {
+        let bind_address = if bind_address.is_some() {
+            bind_address.unwrap()
+        } else {
+            "127.0.0.1".to_string()
+        };
+
+        let listening_port = if listening_port.is_some() {
+            listening_port.unwrap()
+        } else {
+            6379u16
+        };
+
+        Self {
+            bind_address,
+            listening_port,
+            dir_name,
+            dbfilename,
+            peers: Vec::new(),
+        }
+    }
+}
+
+impl RedisInstance for Leader {
+    fn run(&self) -> Pin<Box<dyn Future<Output = ()> + '_>> {
+        Box::pin(async {
+            // initialise the DB
+            //let db: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+            let kv_store: KeyValueStore<String, String> = KeyValueStore::new();
+            let peers: Vec<Arc<Mutex<BufWriter<TcpStream>>>> = Vec::new();
+            let state = Arc::new(Mutex::new(Shared::new()));
+
+            if self.dir_name.is_some() && self.dbfilename.is_some() {
+                log::info!(
+                    "initialising database from rdb file {}/{}..",
+                    self.dir_name.clone().unwrap(),
+                    self.dbfilename.clone().unwrap()
+                );
+                load_from_rdb(kv_store.clone())
+                    .await
+                    .expect("RDB file read failed");
+            }
+
+            // Create TCP Listener
+            let bind_address = STATE.get_val(&"bind_address".to_string()).unwrap();
+            let listening_port = STATE.get_val(&"listening_port".to_string()).unwrap();
+            let listener_addr = format!("{}:{}", bind_address, listening_port);
+            let listener = TcpListener::bind(listener_addr.to_owned())
+                .await
+                .expect("Binding to listener address failed!");
+            log::info!("Redis running on {}...", listener_addr);
+
+            // Handle Multiple Clients in a loop
+            loop {
+                let master_replid: String = rand::thread_rng()
+                    .sample_iter(&Alphanumeric)
+                    .take(40) // 40 character long
+                    .map(char::from) // `u8` values to `char`
+                    .collect();
+
+                STATE.push(("master_replid".into(), master_replid));
+
+                let master_repl_offset: u64 = 0;
+                STATE.push(("master_repl_offset".into(), master_repl_offset.to_string()));
+
+                // listener
+                let (tcp_stream, socket_addr) = listener
+                    .accept()
+                    .await
+                    .expect("Accepting connection failed");
+                log::info!("Accepted connection from {}", socket_addr.ip().to_string());
+
+                let kv_store_client = kv_store.clone();
+                let kv_store_follower = kv_store.clone();
+                let peers = peers.clone();
+                let state = Arc::clone(&state);
+
+                tokio::spawn(async move {
+                    let mut conn = Connection::new(state, tcp_stream, socket_addr);
+                    let _ = conn.handle(kv_store_client, Some(peers)).await;
+                    // let _ = conn.handle_follower(kv_store_follower).await;
+                });
+            }
+        })
+    }
+}
 
 pub async fn start_server(
     bind_address: Option<String>,
@@ -32,129 +250,140 @@ pub async fn start_server(
     // Start logging.
     femme::start();
     if bind_address.is_some() {
-        CONFIG_LIST.push(("bind_address".to_string(), bind_address.clone().unwrap()));
+        STATE.push(("bind_address".to_string(), bind_address.clone().unwrap()));
     }
 
     if listening_port.is_some() {
-        CONFIG_LIST.push((
+        STATE.push((
             "listening_port".to_string(),
             listening_port.unwrap().to_string(),
         ));
     }
 
     if dir_name.is_some() {
-        CONFIG_LIST.push(("dir".to_string(), dir_name.clone().unwrap()));
+        STATE.push(("dir".to_string(), dir_name.clone().unwrap()));
     }
 
     if dbfilename.is_some() {
-        CONFIG_LIST.push(("dbfilename".to_string(), dbfilename.clone().unwrap()));
+        STATE.push(("dbfilename".to_string(), dbfilename.clone().unwrap()));
     }
 
-    if replicaof.is_some() {
-        CONFIG_LIST.push(("replicaof".to_string(), replicaof.clone().unwrap()));
-    }
-
-    if bind_address.is_some() && listening_port.is_some() {
-        // initialise the DB
-        //let db: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
-        let db: ExpiringHashMap<String, String> = ExpiringHashMap::new();
-
-        if dir_name.is_some() && dbfilename.is_some() {
-            log::info!(
-                "initialising database from rdb file {}/{}..",
-                dir_name.unwrap(),
-                dbfilename.unwrap()
-            );
-            load_from_rdb(db.clone())
-                .await
-                .expect("RDB file read failed");
-        }
-
-        // Create TCP Listener
-        let bind_address = CONFIG_LIST.get_val(&"bind_address".to_string()).unwrap();
-        let listening_port = CONFIG_LIST.get_val(&"listening_port".to_string()).unwrap();
-        let listener_addr = format!("{}:{}", bind_address, listening_port);
-        let listener = TcpListener::bind(listener_addr.to_owned())
-            .await
-            .expect("Binding to listener address failed!");
-        log::info!("Redis running on {}...", listener_addr);
-
-        // Handle Multiple Clients in a loop
-        loop {
-            if replicaof.is_some() {
-                dbg!(replicaof.clone());
-                tokio::spawn(handle_follower());
-            } else {
-                dbg!(replicaof.clone());
-                let master_replid: String = rand::thread_rng()
-                    .sample_iter(&Alphanumeric)
-                    .take(40) // 40 character long
-                    .map(char::from) // `u8` values to `char`
-                    .collect();
-
-                CONFIG_LIST.push(("master_replid".into(), master_replid));
-
-                let master_repl_offset: u64 = 0;
-                CONFIG_LIST.push(("master_repl_offset".into(), master_repl_offset.to_string()));
+    let leader_addr = if replicaof.is_some() {
+        let leader_addr = if let Some(val) = replicaof {
+            let ip_and_port: Vec<&str> = val.split_whitespace().collect();
+            if ip_and_port.len() > 2 {
+                panic!("Wrong number of arguments in leader connection string");
             }
-            let (tcp_stream, socket_addr) = listener
-                .accept()
-                .await
-                .expect("Accepting connection failed");
-            log::info!("Accepted connection from {}", socket_addr.ip().to_string());
-            let db = db.clone();
-
-            tokio::spawn(handle_client(tcp_stream, socket_addr, db));
-        }
+            format!("{}:{}", ip_and_port[0], ip_and_port[1])
+        } else {
+            panic!("Leader address is not valid");
+        };
+        STATE.push(("LEADER".to_string(), leader_addr.clone()));
+        Some(leader_addr)
     } else {
-        panic!("Bind address and port cannot be empty!");
-    }
-}
-
-async fn handle_follower() {
-    let replicaof = CONFIG_LIST.get_val(&"replicaof".to_string());
-    let leader_addr = if let Some(val) = replicaof {
-        let ip_and_port: Vec<&str> = val.split_whitespace().collect();
-        if ip_and_port.len() > 2 {
-            panic!("Wrong number of arguments in leader connection string");
-        }
-        format!("{}:{}", ip_and_port[0], ip_and_port[1])
-    } else {
-        panic!("Leader address is not valid");
+        None
     };
 
-    tokio::spawn(async move {
-        let stream = TcpStream::connect(leader_addr).await.unwrap();
-        follower_handshake(stream).await;
-    });
+    if leader_addr.is_none() {
+        // it's a Leader instance
+        let leader: Box<dyn RedisInstance> = Box::new(Leader::new(
+            bind_address.clone(),
+            listening_port,
+            dir_name.clone(),
+            dbfilename.clone(),
+        ));
+        leader.run().await;
+    } else {
+        // it's a follower instance
+        let follower: Box<dyn RedisInstance> = Box::new(Follower::new(
+            bind_address.clone(),
+            listening_port,
+            leader_addr.clone(),
+        ));
+        follower.run().await;
+    }
 }
 
-async fn follower_handshake(mut stream: TcpStream) -> anyhow::Result<()> {
+async fn follower_thread(leader_addr: String, store: KeyValueStore<String, String>) {
+    let mut stream = Arc::new(Mutex::new(TcpStream::connect(leader_addr).await.unwrap()));
+    let stream_1 = stream.clone();
+
+    follower_handshake(stream.clone()).await;
+    // let n = reader.read(&mut buffer).await?;
+    // dbg!(String::from_utf8_lossy(&buffer[..n]).to_string());
+
+    let mut stream = stream_1.lock().await;
     let (mut reader, mut writer) = stream.split();
+    loop {
+        let mut buffer = BytesMut::with_capacity(16 * 1024);
+        if let Ok(n) = reader.read_buf(&mut buffer).await {
+            println!("{:?}", &buffer);
+            let cmd_network = buffer[..n].to_vec();
+            if let Ok(tk) = Tokenizer::new(&cmd_network) {
+                let mut responses: Vec<Vec<u8>> = Vec::new();
+                if let Ok(data) = RespData::try_from(tk) {
+                    match data {
+                        RespData::Array(v) => match parse_command(v) {
+                            Ok(res) => match res {
+                                Command::Set(o) => {
+                                    let key = o.key;
+                                    let value = o.value;
+                                    let expiry = o.expiry;
+                                    let mut kv_store = store.clone();
+                                    kv_store.insert(key.clone(), value.clone(), expiry).await;
+                                    responses.push(format!("+OK{}", CRLF).as_bytes().to_vec());
+                                    drop(kv_store);
+                                }
+                                _ => {}
+                            },
+                            Err(_) => todo!(),
+                        },
+                        RespData::String(_) => todo!(),
+                        RespData::ErrorStr(_) => todo!(),
+                        RespData::Integer(_) => todo!(),
+                        RespData::BulkStr(_) => todo!(),
+                        RespData::Null => todo!(),
+                        RespData::Boolean(_) => todo!(),
+                        RespData::Double(_) => todo!(),
+                        RespData::BulkError(_) => todo!(),
+                        RespData::VerbatimStr(_) => todo!(),
+                        RespData::Map(_) => todo!(),
+                        RespData::Set(_) => todo!(),
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn follower_handshake(mut stream: Arc<Mutex<TcpStream>>) {
     // Hashshake
+    let mut stream = stream.lock().await;
+    let (mut reader, mut writer) = stream.split();
     let message = b"*1\r\n$4\r\nPING\r\n";
-    writer.write_all(message).await?;
+    writer.write_all(message).await;
 
     let mut buffer = [0; 512];
-    let n = reader.read(&mut buffer).await?;
-    dbg!(String::from_utf8_lossy(&buffer[..n]).to_string());
+    if let Ok(n) = reader.read(&mut buffer).await {
+        dbg!(String::from_utf8_lossy(&buffer[..n]).to_string());
+    }
 
     let message = b"*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$4\r\n6380\r\n";
-    writer.write_all(message).await?;
+    writer.write_all(message).await;
     let mut buffer = [0; 512];
-    let n = reader.read(&mut buffer).await?;
-    dbg!(String::from_utf8_lossy(&buffer[..n]).to_string());
+    if let Ok(n) = reader.read(&mut buffer).await {
+        dbg!(String::from_utf8_lossy(&buffer[..n]).to_string());
+    }
 
     let message = b"*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n";
-    writer.write_all(message).await?;
+    writer.write_all(message).await;
     let mut buffer = [0; 512];
-    let n = reader.read(&mut buffer).await?;
-    dbg!(String::from_utf8_lossy(&buffer[..n]).to_string());
+    if let Ok(n) = reader.read(&mut buffer).await {
+        dbg!(String::from_utf8_lossy(&buffer[..n]).to_string());
+    }
 
     let message = b"*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n";
-    writer.write_all(message).await?;
-    let mut buffer = [0; 512];
-    let n = reader.read(&mut buffer).await?;
-    dbg!(String::from_utf8_lossy(&buffer[..n]).to_string());
-    Ok(())
+    writer.write_all(message).await;
+    // let mut buffer = [0; 512];
+    drop(stream);
 }

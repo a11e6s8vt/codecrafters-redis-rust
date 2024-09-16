@@ -22,16 +22,22 @@ pub fn parse_command(v: Vec<RespData>) -> anyhow::Result<Command, CommandError> 
     if let Some(cmd_name) = cmd_str {
         match cmd_name.to_ascii_lowercase().as_str() {
             "set" => {
-                let key = if let Some(RespData::String(key)) = v_iter.next() {
-                    key.to_owned()
-                } else {
-                    return Err(CommandError::WrongNumberOfArguments("set".into()));
+                let key = match v_iter.next() {
+                    Some(key) => match key {
+                        RespData::String(s) => s.to_owned(),
+                        RespData::Integer(n) => n.to_string(),
+                        _ => return Err(CommandError::NotValidType("set".into())),
+                    },
+                    None => return Err(CommandError::WrongNumberOfArguments("set".into())),
                 };
 
-                let value = if let Some(RespData::String(value)) = v_iter.next() {
-                    value.to_owned()
-                } else {
-                    return Err(CommandError::WrongNumberOfArguments("set".into()));
+                let value = match v_iter.next() {
+                    Some(value) => match value {
+                        RespData::String(s) => s.to_owned(),
+                        RespData::Integer(n) => n.to_string(),
+                        _ => return Err(CommandError::NotValidType("set".into())),
+                    },
+                    None => return Err(CommandError::WrongNumberOfArguments("set".into())),
                 };
 
                 let mut expiry: Option<Duration> = None;

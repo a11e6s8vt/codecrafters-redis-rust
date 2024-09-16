@@ -1,12 +1,13 @@
 use num::BigInt;
 use std::iter::Peekable;
-use std::str::Chars;
+use std::str::{Chars, Utf8Error};
 
 type IT<'b> = Peekable<Chars<'b>>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     Asterisk,
+    CRLF,
     Dollar,
     Plus,
     Minus,
@@ -33,11 +34,11 @@ pub struct Tokenizer<'b> {
 }
 
 impl<'b> Tokenizer<'b> {
-    pub fn new(s: &'b [u8]) -> Self {
-        let s = std::str::from_utf8(&s).unwrap();
-        Tokenizer {
+    pub fn new(s: &'b [u8]) -> Result<Self, Utf8Error> {
+        let s = std::str::from_utf8(&s)?;
+        Ok(Tokenizer {
             it: s.chars().peekable(),
-        }
+        })
     }
 }
 
@@ -47,7 +48,7 @@ impl<'b> Iterator for Tokenizer<'b> {
     fn next(&mut self) -> Option<Self::Item> {
         while let Some(c) = self.it.next() {
             match c {
-                '\n' | '\r' => {}
+                '\r' | '\n' => {}
                 ':' => return Some(Ok(Token::Colon)),
                 '_' => return Some(Ok(Token::Underscore)),
                 '-' => {
@@ -68,11 +69,23 @@ impl<'b> Iterator for Tokenizer<'b> {
                 '~' => return Some(Ok(Token::Tilde)),
                 '>' => return Some(Ok(Token::GreaterThan)),
                 '?' => return Some(Ok(Token::Question)),
-                v if v.is_ascii_digit() => {
-                    return Some(Ok(Token::Num(num_token(&mut self.it, c as char))))
-                }
-                l if l.is_alphabetic() => {
-                    return Some(Ok(Token::Word(word_token(&mut self.it, c as char))))
+                v if v.is_alphanumeric() => {
+                    let t = alphanumeric_token(&mut self.it, c);
+                    if let Ok(num) = t.parse::<i64>() {
+                        return Some(Ok(Token::Num(num)));
+                    }
+                    // // Check if the string is alphanumeric
+                    // else if t.chars().all(char::is_alphanumeric) {
+                    //     println!("The string is alphanumeric.");
+                    // }
+                    // // Check if the string is alphabetical
+                    // else if s.chars().all(char::is_alphabetic) {
+                    //     println!("The string is alphabetical.");
+                    // }
+                    // If none of the above
+                    else {
+                        return Some(Ok(Token::Word(t)));
+                    }
                 }
                 c => return Some(Err(format!("unexpected char '{}'", c))),
             }
@@ -105,6 +118,21 @@ fn negative_num_token(it: &mut IT) -> Option<i64> {
     }
 
     Some(num)
+}
+
+fn alphanumeric_token(it: &mut IT, c: char) -> String {
+    let mut word = c.to_owned().to_string();
+
+    while let Some(c) = it.peek() {
+        if c.is_ascii_alphanumeric() {
+            word.push(*c);
+        } else {
+            return word;
+        }
+        it.next();
+    }
+
+    word
 }
 
 fn num_token(it: &mut IT, c: char) -> i64 {
@@ -184,7 +212,7 @@ mod tests {
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         ];
-        let mut tk = Tokenizer::new(&buffer);
+        let mut tk = Tokenizer::new(&buffer).unwrap();
         assert_eq!(tk.next(), Some(Ok(Token::Asterisk)));
         assert_eq!(tk.next(), Some(Ok(Token::Num(2))));
         assert_eq!(tk.next(), Some(Ok(Token::Dollar)));

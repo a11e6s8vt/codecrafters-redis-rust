@@ -4,24 +4,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, MutexGuard};
 
-struct BarIter<'a, K: 'a, V: 'a> {
-    guard: MutexGuard<'a, Vec<(K, V)>>,
-}
-
-impl<'a, 'b: 'a, K: 'a, V: 'a> IntoIterator for &'b BarIter<'a, K, V> {
-    type Item = &'a (K, V);
-    type IntoIter = ::std::slice::Iter<'a, (K, V)>;
-
-    fn into_iter(self) -> ::std::slice::Iter<'a, (K, V)> {
-        self.guard.iter()
-    }
-}
-
-pub struct ExpiringHashMapIterator<K, V> {
+pub struct KeyValueStoreIterator<K, V> {
     iter: std::collections::hash_map::IntoIter<K, (V, Option<(Instant, Duration)>)>,
 }
 
-impl<K, V> Iterator for ExpiringHashMapIterator<K, V> {
+impl<K, V> Iterator for KeyValueStoreIterator<K, V> {
     type Item = (K, (V, Option<(Instant, Duration)>));
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -30,13 +17,13 @@ impl<K, V> Iterator for ExpiringHashMapIterator<K, V> {
 }
 
 #[derive(Clone, Debug)]
-pub struct ExpiringHashMap<K, V> {
+pub struct KeyValueStore<K, V> {
     size: Arc<Mutex<usize>>,
     expire_size: Arc<Mutex<usize>>,
     hash_map: Arc<Mutex<HashMap<K, (V, Option<(Instant, Duration)>)>>>,
 }
 
-impl<K, V> ExpiringHashMap<K, V>
+impl<K, V> KeyValueStore<K, V>
 where
     K: Display + Debug + Clone + Eq + std::hash::Hash,
     V: Display + Debug + Clone,
@@ -57,10 +44,10 @@ where
         *self.expire_size.lock().await
     }
 
-    pub async fn iter(&mut self) -> ExpiringHashMapIterator<K, V> {
+    pub async fn iter(&mut self) -> KeyValueStoreIterator<K, V> {
         let map = self.hash_map.lock().await;
         let iter = map.clone().into_iter();
-        ExpiringHashMapIterator { iter }
+        KeyValueStoreIterator { iter }
     }
 
     pub async fn insert(&mut self, k: K, v: V, expiry: Option<Duration>) -> Option<V> {
@@ -145,7 +132,7 @@ where
     }
 }
 
-pub async fn prune_database(db: Arc<Mutex<ExpiringHashMap<String, String>>>) {
+pub async fn prune_database(db: Arc<Mutex<KeyValueStore<String, String>>>) {
     loop {
         let mut guard = db.lock().await;
         guard.prune().await;

@@ -1,5 +1,5 @@
-use super::ExpiringHashMap;
-use crate::global::CONFIG_LIST;
+use super::KeyValueStore;
+use crate::global::STATE;
 use anyhow::Error;
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use std::any::Any;
@@ -16,11 +16,11 @@ use std::{
 const MAGIC_STRING: [u8; 9] = *b"REDIS0011";
 
 async fn init_db(file_mode: String) -> anyhow::Result<File, Error> {
-    let rdb_dir = CONFIG_LIST
+    let rdb_dir = STATE
         .get_val(&"dir".into())
         .expect("directory name is empty");
 
-    let rdb_file = CONFIG_LIST
+    let rdb_file = STATE
         .get_val(&"dbfilename".into())
         .expect("filename is empty");
 
@@ -56,7 +56,6 @@ async fn init_db(file_mode: String) -> anyhow::Result<File, Error> {
 
     rdb_file.write_all(&metadata)?;
     if file_mode == "read".to_owned() {
-        println!("READDDD");
         drop(rdb_file);
         return Ok(OpenOptions::new().read(true).open(&rdb_file_p)?);
     } else {
@@ -64,7 +63,7 @@ async fn init_db(file_mode: String) -> anyhow::Result<File, Error> {
     }
 }
 
-pub async fn write_to_disk(mut db: ExpiringHashMap<String, String>) -> anyhow::Result<()> {
+pub async fn write_to_disk(mut db: KeyValueStore<String, String>) -> anyhow::Result<()> {
     let mut rdb_file = init_db("write".to_string()).await?;
 
     // Database Subsection
@@ -118,7 +117,7 @@ fn length_encoded_int(n: usize) -> Vec<u8> {
     encoded_int
 }
 
-pub async fn load_from_rdb(mut db: ExpiringHashMap<String, String>) -> anyhow::Result<(), Error> {
+pub async fn load_from_rdb(mut db: KeyValueStore<String, String>) -> anyhow::Result<(), Error> {
     let file = init_db("read".to_string()).await.expect("File init failed");
     let mut reader = BufReader::new(file);
 
