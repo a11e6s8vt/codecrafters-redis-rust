@@ -10,7 +10,6 @@ mod database;
 mod global;
 mod parse;
 mod resp;
-mod token;
 
 #[tokio::main]
 pub async fn main() -> anyhow::Result<(), Error> {

@@ -1,11 +1,106 @@
 use std::{
     collections::{HashMap, HashSet},
-    str::{self, Utf8Error},
+    str::{self, Chars, Utf8Error},
 };
 
 use bytes::Bytes;
+use std::iter::Peekable;
 
-use crate::token::{Token, Tokenizer};
+type IT<'b> = Peekable<Chars<'b>>;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Token {
+    Asterisk,
+    CRLF,
+    Dollar,
+    Plus,
+    Minus,
+    Colon,
+    Underscore,
+    Comma,
+    PercentSign,
+    BracketOpen,
+    Exclamation,
+    EqualSign,
+    Tilde,
+    GreaterThan,
+    Question,
+    Num(i64),
+    Word(String),
+    NewLine,
+    CarriageReturn,
+}
+
+#[derive(Debug, Clone)]
+pub struct Tokenizer<'b> {
+    it: IT<'b>,
+}
+
+impl<'b> Tokenizer<'b> {
+    pub fn new(s: &'b String) -> Result<Self, Utf8Error> {
+        Ok(Tokenizer {
+            it: s.chars().peekable(),
+        })
+    }
+}
+
+impl<'b> Iterator for Tokenizer<'b> {
+    type Item = Result<Token, String>;
+    // *2\r\n\$3\r\nGET\r\n\$3\r\nfoo\r\n
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some(c) = self.it.next() {
+            match c {
+                '\r' | '\n' => return Some(Ok(Token::CRLF)),
+                ':' => return Some(Ok(Token::Colon)),
+                '_' => return Some(Ok(Token::Underscore)),
+                '-' => {
+                    let c = self.it.next().expect("a valid token");
+                    let t = utf8_token(&mut self.it, c);
+                    if let Ok(num) = t.parse::<i64>() {
+                        return Some(Ok(Token::Num(-num)));
+                    } else {
+                        return Some(Ok(Token::Word(t)));
+                    }
+                }
+                '+' => return Some(Ok(Token::Plus)),
+                '*' => return Some(Ok(Token::Asterisk)),
+                '$' => return Some(Ok(Token::Dollar)),
+                ',' => return Some(Ok(Token::Comma)),
+                '%' => return Some(Ok(Token::PercentSign)),
+                '(' => return Some(Ok(Token::BracketOpen)),
+                '!' => return Some(Ok(Token::Exclamation)),
+                '=' => return Some(Ok(Token::EqualSign)),
+                '~' => return Some(Ok(Token::Tilde)),
+                '>' => return Some(Ok(Token::GreaterThan)),
+                '?' => return Some(Ok(Token::Question)),
+                v => {
+                    let t = utf8_token(&mut self.it, v);
+                    if let Ok(num) = t.parse::<i64>() {
+                        return Some(Ok(Token::Num(num)));
+                    } else {
+                        return Some(Ok(Token::Word(t)));
+                    }
+                }
+            }
+        }
+        None
+    }
+}
+
+fn utf8_token(it: &mut IT, c: char) -> String {
+    let mut word = c.to_owned().to_string();
+
+    while let Some(c) = it.next() {
+        if c == '\r' {
+            it.next();
+            //it.next();
+            break;
+        }
+        word.push(c);
+    }
+
+    word
+}
 
 #[derive(Debug)]
 pub enum RespError {
@@ -45,131 +140,135 @@ pub enum RespData {
 // }
 
 impl RespData {
-    pub fn valid() -> bool {
-        unimplemented!()
+    pub fn parse(resp_str: &String) -> anyhow::Result<Vec<RespData>, RespError> {
+        let mut result: Vec<RespData> = Vec::new();
+        if let Ok(mut tk) = Tokenizer::new(resp_str) {
+            while let Some(Ok(t)) = tk.next() {
+                match t {
+                    Token::Asterisk => {
+                        // RESP Array
+                        let mut res: Vec<RespData> = Vec::new();
+                        let array_length = if let Some(Ok(Token::Num(array_length))) = tk.next() {
+                            array_length
+                        } else {
+                            break;
+                        };
+                        while let Some(Ok(token)) = tk.next() {
+                            match token {
+                                Token::Dollar => {
+                                    let word_len = if let Some(Ok(Token::Num(word_len))) = tk.next()
+                                    {
+                                        word_len
+                                    } else {
+                                        break;
+                                    };
+                                    let word = match tk.next() {
+                                        Some(Ok(Token::Word(word))) => word,
+                                        Some(Ok(Token::Num(num))) => num.to_string(),
+                                        Some(Ok(Token::Question)) => "?".to_string(),
+                                        Some(Ok(Token::Asterisk)) => "*".to_string(),
+                                        Some(Ok(_)) => break,
+                                        Some(Err(_)) => break,
+                                        None => break,
+                                    };
+
+                                    if word.len() == word_len as usize {
+                                        if let Ok(n) = word.parse::<i64>() {
+                                            res.push(RespData::Integer(n));
+                                        } else {
+                                            res.push(RespData::String(word));
+                                        }
+                                    } else {
+                                        return Err(RespError::Invalid);
+                                    }
+
+                                    if res.len() == array_length as usize {
+                                        result.push(RespData::Array(res));
+                                        break;
+                                    }
+                                }
+                                Token::CRLF => {}
+                                _ => todo!(),
+                            }
+                        }
+                    }
+                    Token::CRLF => {}
+                    Token::Dollar => {}
+                    Token::Plus => {
+                        let mut res: Vec<RespData> = Vec::new();
+                        while let Some(Ok(token)) = tk.next() {
+                            match token {
+                                Token::Word(word) => {
+                                    res.push(RespData::String(word));
+                                }
+                                Token::CRLF => break,
+                                _ => {}
+                            }
+                        }
+                        result.push(RespData::Array(res));
+                    }
+                    Token::Minus => todo!(),
+                    Token::Colon => todo!(),
+                    Token::Underscore => todo!(),
+                    Token::Comma => todo!(),
+                    Token::PercentSign => todo!(),
+                    Token::BracketOpen => todo!(),
+                    Token::Exclamation => todo!(),
+                    Token::EqualSign => todo!(),
+                    Token::Tilde => todo!(),
+                    Token::GreaterThan => todo!(),
+                    Token::Question => todo!(),
+                    Token::Num(_) => todo!(),
+                    Token::Word(_) => todo!(),
+                    Token::NewLine => todo!(),
+                    Token::CarriageReturn => todo!(),
+                }
+            }
+        }
+        Ok(result)
     }
 }
 
-/// Clients send commands to the Redis server as RESP arrays
-/// RESP Arrays' encoding uses the following format:
-///     *<number-of-elements>\r\n<element-1>...<element-n>
-/// "*2\r\n\$3\r\nGET\r\n\$3\r\nfoo\r\n"
-impl<'b> TryFrom<Tokenizer<'b>> for RespData {
-    type Error = RespError;
-
-    fn try_from(mut tokens: Tokenizer) -> std::result::Result<Self, Self::Error> {
-        let first_token = if let Some(Ok(first_token)) = tokens.next() {
-            first_token
-        } else {
-            return Err(RespError::Invalid);
-        };
-        dbg!(first_token.clone());
-
-        match first_token {
-            Token::Asterisk => {
-                let mut res: Vec<RespData> = Vec::new();
-
-                let array_len = if let Some(Ok(second_token)) = tokens.next() {
-                    match second_token {
-                        Token::Num(i) => i,
-                        _ => return Err(RespError::Invalid),
-                    }
-                } else {
-                    return Err(RespError::Invalid);
-                };
-
-                while let Some(tk) = tokens.next() {
-                    if let Ok(token) = tk {
-                        dbg!(token.clone());
+pub fn parse_handshake_response(resp_str: &String) -> Vec<Vec<String>> {
+    let mut result: Vec<Vec<String>> = Vec::new();
+    if let Ok(mut tk) = Tokenizer::new(resp_str) {
+        while let Some(Ok(t)) = tk.next() {
+            match t {
+                Token::Asterisk => {}
+                Token::CRLF => todo!(),
+                Token::Dollar => todo!(),
+                Token::Plus => {
+                    let mut res: Vec<String> = Vec::new();
+                    while let Some(Ok(token)) = tk.next() {
                         match token {
-                            Token::Dollar => {
-                                if let Some(Ok(t)) = tokens.next() {
-                                    let token_len = match t {
-                                        Token::Num(i) => i,
-                                        _ => return Err(RespError::Invalid),
-                                    };
-
-                                    if let Some(Ok(t)) = tokens.next() {
-                                        let mut word = match t {
-                                            Token::Word(w) => w,
-                                            Token::Num(n) => n.to_string(),
-                                            Token::Asterisk => "*".to_string(),
-                                            Token::Question => "?".to_string(),
-                                            _ => return Err(RespError::Invalid),
-                                        };
-                                        // Special case - "listening-port"
-                                        if word.as_str() == "listening" {
-                                            if let Some(RespData::String(kw)) = res.last() {
-                                                if kw.as_str() == "REPLCONF" {
-                                                    let (token1, token2) =
-                                                        (tokens.next(), tokens.next());
-                                                    if let Some(Ok(Token::Minus)) = token1 {
-                                                        dbg!(Token::Minus);
-                                                        if let Some(Ok(Token::Word(t))) = token2 {
-                                                            if t.as_str() == "port" {
-                                                                word = "listening-port".to_string();
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        // Special case - "psync2" - alphanumeric
-                                        // todo: rewrite tokenizer to handle alphanumeric
-                                        if word.as_str() == "psync" {
-                                            if let Some(RespData::String(kw)) = res.first() {
-                                                if kw.as_str() == "REPLCONF" {
-                                                    let token1 = tokens.next();
-                                                    if let Some(Ok(Token::Num(n))) = token1 {
-                                                        if n == 2 {
-                                                            word = "psync2".to_string();
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        dbg!(word.clone());
-                                        if word.len() == token_len as usize {
-                                            if let Ok(n) = word.parse::<i64>() {
-                                                res.push(RespData::Integer(n));
-                                            } else {
-                                                res.push(RespData::String(word));
-                                            }
-                                        } else {
-                                            return Err(RespError::Invalid);
-                                        }
-                                    }
-                                }
+                            Token::Word(word) => {
+                                res.push(word);
                             }
-                            Token::Colon => {
-                                if let Some(Ok(t)) = tokens.next() {
-                                    let n = match t {
-                                        Token::Num(w) => w,
-                                        _ => return Err(RespError::Invalid),
-                                    };
-
-                                    res.push(RespData::Integer(n));
-                                } else {
-                                    return Err(RespError::Invalid);
-                                }
-                            }
-                            _ => return Err(RespError::Invalid),
+                            Token::CRLF => break,
+                            _ => {}
                         }
-                    } else {
-                        return Err(RespError::Invalid);
                     }
+                    result.push(res);
                 }
-                if res.len() == array_len as usize {
-                    return Ok(RespData::Array(res));
-                } else {
-                    return Err(RespError::Invalid);
-                }
-            }
-            _ => {
-                return Err(RespError::Invalid);
+                Token::Minus => todo!(),
+                Token::Colon => todo!(),
+                Token::Underscore => todo!(),
+                Token::Comma => todo!(),
+                Token::PercentSign => todo!(),
+                Token::BracketOpen => todo!(),
+                Token::Exclamation => todo!(),
+                Token::EqualSign => todo!(),
+                Token::Tilde => todo!(),
+                Token::GreaterThan => todo!(),
+                Token::Question => todo!(),
+                Token::Num(_) => todo!(),
+                Token::Word(_) => todo!(),
+                Token::NewLine => todo!(),
+                Token::CarriageReturn => todo!(),
             }
         }
+    } else {
+        println!("Creating tokenizer failed");
     }
+    result
 }

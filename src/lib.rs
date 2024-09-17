@@ -5,8 +5,8 @@ mod database;
 mod global;
 mod parse;
 mod resp;
-mod token;
 
+use core::str;
 use std::{
     any::Any, collections::HashMap, future::Future, io, net::SocketAddr, ops::Deref, pin::Pin,
     process::Output, sync::Arc,
@@ -22,15 +22,12 @@ pub use global::STATE;
 
 use parse::parse_command;
 use rand::{distributions::Alphanumeric, Rng};
-use resp::{RespData, RespError};
-use serde_json::{from_slice, to_vec};
-use std::error::Error;
-use token::Tokenizer;
+use resp::{parse_handshake_response, RespData, RespError, Tokenizer};
+
 use tokio::{
-    fs::read,
     io::{AsyncReadExt, AsyncWriteExt, BufWriter},
     net::{TcpListener, TcpStream},
-    sync::{mpsc, Mutex},
+    sync::Mutex,
 };
 
 const CHUNK_SIZE: usize = 16 * 1024;
@@ -132,7 +129,7 @@ impl<'a> RedisInstance for Follower {
                 // tokio::spawn(handle_client(tcp_stream, socket_addr, kv_store, None));
                 tokio::spawn(async move {
                     let mut conn = Connection::new(state, tcp_stream, socket_addr);
-                    let _ = conn.handle(kv_store_client, None).await;
+                    let _ = conn.handle(kv_store_client).await;
                 });
             }
         })
@@ -182,7 +179,6 @@ impl RedisInstance for Leader {
             // initialise the DB
             //let db: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
             let kv_store: KeyValueStore<String, String> = KeyValueStore::new();
-            let peers: Vec<Arc<Mutex<BufWriter<TcpStream>>>> = Vec::new();
             let state = Arc::new(Mutex::new(Shared::new()));
 
             if self.dir_name.is_some() && self.dbfilename.is_some() {
@@ -226,14 +222,11 @@ impl RedisInstance for Leader {
                 log::info!("Accepted connection from {}", socket_addr.ip().to_string());
 
                 let kv_store_client = kv_store.clone();
-                let kv_store_follower = kv_store.clone();
-                let peers = peers.clone();
                 let state = Arc::clone(&state);
 
                 tokio::spawn(async move {
                     let mut conn = Connection::new(state, tcp_stream, socket_addr);
-                    let _ = conn.handle(kv_store_client, Some(peers)).await;
-                    // let _ = conn.handle_follower(kv_store_follower).await;
+                    let _ = conn.handle(kv_store_client).await;
                 });
             }
         })
@@ -304,83 +297,141 @@ pub async fn start_server(
     }
 }
 
-async fn follower_thread(leader_addr: String, store: KeyValueStore<String, String>) {
+async fn follower_thread(
+    leader_addr: String,
+    store: KeyValueStore<String, String>,
+) -> anyhow::Result<(), String> {
     let stream = Arc::new(Mutex::new(TcpStream::connect(leader_addr).await.unwrap()));
-    let stream_1 = stream.clone();
+    let mut buffer = BytesMut::with_capacity(16 * 1024);
 
-    follower_handshake(stream.clone()).await;
-
-    let mut stream = stream_1.lock().await;
-    let (mut reader, mut writer) = stream.split();
-    loop {
-        let mut buffer = BytesMut::with_capacity(16 * 1024);
-        if let Ok(n) = reader.read_buf(&mut buffer).await {
-            let cmd_network = buffer[..n].to_vec();
-            if let Ok(tk) = Tokenizer::new(&cmd_network) {
-                let mut responses: Vec<Vec<u8>> = Vec::new();
-                if let Ok(data) = RespData::try_from(tk) {
-                    match data {
-                        RespData::Array(v) => match parse_command(v) {
-                            Ok(res) => match res {
-                                Command::Set(o) => {
-                                    let key = o.key;
-                                    let value = o.value;
-                                    let expiry = o.expiry;
-                                    let mut kv_store = store.clone();
-                                    kv_store.insert(key.clone(), value.clone(), expiry).await;
-                                    responses.push(format!("+OK{}", CRLF).as_bytes().to_vec());
-                                    drop(kv_store);
-                                }
-                                _ => {}
-                            },
-                            Err(_) => todo!(),
-                        },
-                        RespData::String(_) => todo!(),
-                        RespData::ErrorStr(_) => todo!(),
-                        RespData::Integer(_) => todo!(),
-                        RespData::BulkStr(_) => todo!(),
-                        RespData::Null => todo!(),
-                        RespData::Boolean(_) => todo!(),
-                        RespData::Double(_) => todo!(),
-                        RespData::BulkError(_) => todo!(),
-                        RespData::VerbatimStr(_) => todo!(),
-                        RespData::Map(_) => todo!(),
-                        RespData::Set(_) => todo!(),
+    match follower_handshake(stream.clone()).await {
+        Ok(_) => {
+            loop {
+                dbg!("After handshake");
+                let mut stream = stream.lock().await;
+                if let Ok(n) = stream.read_buf(&mut buffer).await {
+                    if n == 0 {
+                        if buffer.is_empty() {
+                            return Ok(());
+                        } else {
+                            return Err("Follower thread failed!".to_string());
+                        }
                     }
+                    dbg!(&buffer);
+                    let cmd_from_leader = buffer[..n].to_vec();
+
+                    let s = String::from_utf8_lossy(&cmd_from_leader).to_string();
+                    // if let Ok(tk) = Tokenizer::new(&cmd_from_leader) {
+                    if let Ok(resp_parsed) = RespData::parse(&s) {
+                        let mut resp_parsed_iter = resp_parsed.iter();
+                        while let Some(parsed) = resp_parsed_iter.next() {
+                            // let cmd_from_leader = cmd_from_leader.clone();
+                            match parsed {
+                                RespData::Array(v) => match parse_command(v.to_vec()) {
+                                    Ok(res) => match res {
+                                        Command::Set(o) => {
+                                            let key = o.key;
+                                            let value = o.value;
+                                            let expiry = o.expiry;
+                                            let mut kv_store = store.clone();
+                                            kv_store
+                                                .insert(key.clone(), value.clone(), expiry)
+                                                .await;
+                                            drop(kv_store);
+                                        }
+                                        _ => {}
+                                    },
+                                    Err(_) => todo!(),
+                                },
+                                RespData::String(_) => todo!(),
+                                RespData::ErrorStr(_) => todo!(),
+                                RespData::Integer(_) => todo!(),
+                                RespData::BulkStr(_) => todo!(),
+                                RespData::Null => todo!(),
+                                RespData::Boolean(_) => todo!(),
+                                RespData::Double(_) => todo!(),
+                                RespData::BulkError(_) => todo!(),
+                                RespData::VerbatimStr(_) => todo!(),
+                                RespData::Map(_) => todo!(),
+                                RespData::Set(_) => todo!(),
+                            }
+                        }
+                    } //
+                    buffer.clear();
                 }
             }
+        }
+        Err(e) => {
+            eprintln!("{}", e);
+            return Err(e);
         }
     }
 }
 
-async fn follower_handshake(mut stream: Arc<Mutex<TcpStream>>) {
+async fn follower_handshake(stream: Arc<Mutex<TcpStream>>) -> anyhow::Result<(), String> {
     // Hashshake
     let mut stream = stream.lock().await;
-    let (mut reader, mut writer) = stream.split();
-    let message = b"*1\r\n$4\r\nPING\r\n";
-    writer.write_all(message).await;
+    let mut buffer = BytesMut::with_capacity(1 * 512);
+    let handshake_messages = vec![
+        vec!["*1\r\n$4\r\nPING\r\n".to_string(), "+PONG\r\n".to_string()],
+        vec![
+            "*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$4\r\n6380\r\n".to_string(),
+            "+OK\r\n".to_string(),
+        ],
+        vec![
+            "*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n".to_string(),
+            "+OK\r\n".to_string(),
+        ],
+        vec![
+            "*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n".to_string(),
+            "+FULLRESYNC".to_string(),
+        ],
+    ];
+    let mut handshake_messages_iter = handshake_messages.iter().enumerate();
+    while let Some((i, message)) = handshake_messages_iter.next() {
+        let _ = stream.write_all(message[0].as_bytes()).await;
+        if let Ok(n) = stream.read_buf(&mut buffer).await {
+            if n == 0 {
+                if buffer.is_empty() {
+                    return Ok(());
+                } else {
+                    return Err("Handshake failed!".to_string());
+                }
+            }
 
-    let mut buffer = [0; 512];
-    if let Ok(n) = reader.read(&mut buffer).await {
-        dbg!(String::from_utf8_lossy(&buffer[..n]).to_string());
+            let cmd_from_leader = buffer[..n].to_vec();
+
+            let s = String::from_utf8_lossy(&cmd_from_leader).to_string();
+            // Sometimes the response to `PSYNC ? -1` comes in a single network read
+            // In that case, the `+FULLRESYNC` and the database contents will be in the same buffer
+            // Our resp parser will parse it correctly, but the result will have two items.
+            let parsed = &parse_handshake_response(&s)[0];
+            let parsed_len = parsed.len();
+            if parsed_len == 1 {
+                if !message[1].contains(parsed[0].split(" ").collect::<Vec<&str>>()[0]) {
+                    return Err("Handshake failed!".to_string());
+                }
+            } else if parsed_len == 2 {
+                if !parsed[0].starts_with("FULLRESYNC") && !parsed[1].starts_with("REDIS") {
+                    return Err("Handshake failed!".to_string());
+                } else {
+                    log::info!("Handshake Completed!!!");
+                    return Ok(());
+                }
+            }
+        }
+        buffer.clear();
     }
-
-    let message = b"*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$4\r\n6380\r\n";
-    writer.write_all(message).await;
-    let mut buffer = [0; 512];
-    if let Ok(n) = reader.read(&mut buffer).await {
-        dbg!(String::from_utf8_lossy(&buffer[..n]).to_string());
+    if let Ok(n) = stream.read_buf(&mut buffer).await {
+        let response = String::from_utf8_lossy(&buffer[..n]).to_string();
+        if !response.contains("REDIS") {
+            return Err("Handshake Failed!".into());
+        } else {
+            log::info!("Handshake Completed!!!");
+        }
     }
-
-    let message = b"*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n";
-    writer.write_all(message).await;
-    let mut buffer = [0; 512];
-    if let Ok(n) = reader.read(&mut buffer).await {
-        dbg!(String::from_utf8_lossy(&buffer[..n]).to_string());
-    }
-
-    let message = b"*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n";
-    writer.write_all(message).await;
-    // let mut buffer = [0; 512];
+    buffer.clear();
     drop(stream);
+
+    Ok(())
 }
