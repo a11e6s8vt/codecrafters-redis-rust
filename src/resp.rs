@@ -219,7 +219,7 @@ impl RespData {
                     Token::GreaterThan => todo!(),
                     Token::Question => todo!(),
                     Token::Num(_) => todo!(),
-                    Token::Word(_) => todo!(),
+                    Token::Word(_) => {}
                     Token::NewLine => todo!(),
                     Token::CarriageReturn => todo!(),
                 }
@@ -235,7 +235,7 @@ pub fn parse_handshake_response(resp_str: &String) -> Vec<Vec<String>> {
         while let Some(Ok(t)) = tk.next() {
             match t {
                 Token::Asterisk => {}
-                Token::CRLF => todo!(),
+                Token::CRLF => {}
                 Token::Dollar => todo!(),
                 Token::Plus => {
                     let mut res: Vec<String> = Vec::new();

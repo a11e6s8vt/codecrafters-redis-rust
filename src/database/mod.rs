@@ -21,7 +21,7 @@ impl Shared {
         }
     }
 
-    pub async fn broadcast(&mut self, sender: SocketAddr, message: Vec<u8>) {
+    pub async fn broadcast(&mut self, message: Vec<u8>) {
         for peer in self.peers.iter_mut() {
             let _ = peer.1.send(message.clone());
         }

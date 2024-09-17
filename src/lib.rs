@@ -222,10 +222,10 @@ impl RedisInstance for Leader {
                 log::info!("Accepted connection from {}", socket_addr.ip().to_string());
 
                 let kv_store_client = kv_store.clone();
-                let state = Arc::clone(&state);
+                let state_client_handles = Arc::clone(&state);
 
                 tokio::spawn(async move {
-                    let mut conn = Connection::new(state, tcp_stream, socket_addr);
+                    let mut conn = Connection::new(state_client_handles, tcp_stream, socket_addr);
                     let _ = conn.handle(kv_store_client).await;
                 });
             }
@@ -306,59 +306,78 @@ async fn follower_thread(
 
     match follower_handshake(stream.clone()).await {
         Ok(_) => {
-            loop {
-                dbg!("After handshake");
-                let mut stream = stream.lock().await;
-                if let Ok(n) = stream.read_buf(&mut buffer).await {
-                    if n == 0 {
-                        if buffer.is_empty() {
-                            return Ok(());
-                        } else {
-                            return Err("Follower thread failed!".to_string());
+            dbg!("After handshake");
+            let mut stream = stream.lock().await;
+            while let Ok(n) = stream.read_buf(&mut buffer).await {
+                if n == 0 {
+                    if buffer.is_empty() {
+                        return Ok(());
+                    } else {
+                        return Err("Follower thread failed!".to_string());
+                    }
+                }
+                dbg!(&buffer);
+                let cmd_from_leader = buffer[..n].to_vec();
+
+                let s = String::from_utf8_lossy(&cmd_from_leader).to_string();
+                if let Ok(resp_parsed) = RespData::parse(&s) {
+                    let mut resp_parsed_iter = resp_parsed.iter();
+                    while let Some(parsed) = resp_parsed_iter.next() {
+                        dbg!(parsed);
+                        // let cmd_from_leader = cmd_from_leader.clone();
+                        match parsed {
+                            RespData::Array(v) => match parse_command(v.to_vec()) {
+                                Ok(res) => match res {
+                                    Command::Set(o) => {
+                                        let key = o.key;
+                                        let value = o.value;
+                                        let expiry = o.expiry;
+                                        let mut kv_store = store.clone();
+                                        kv_store.insert(key.clone(), value.clone(), expiry).await;
+                                        drop(kv_store);
+                                    }
+                                    Command::Replconf(o) => {
+                                        let args = o.args;
+                                        let mut args_iter = args.iter();
+                                        let first =
+                                            args_iter.next().expect("First cannot be empty");
+                                        dbg!(&first);
+                                        match first.as_str() {
+                                            "getack" => {
+                                                let opt = args_iter
+                                                    .next()
+                                                    .expect("Expect a valid port number");
+                                                // *3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n.
+                                                let response = format!(
+                                                    "*3{}$8{}REPLCONF{}$3{}ACK{}$1{}0{}",
+                                                    CRLF, CRLF, CRLF, CRLF, CRLF, CRLF, CRLF
+                                                )
+                                                .as_bytes()
+                                                .to_vec();
+                                                let _ = stream.write_all(&response).await;
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    _ => {}
+                                },
+                                Err(_) => todo!(),
+                            },
+                            RespData::String(_) => todo!(),
+                            RespData::ErrorStr(_) => todo!(),
+                            RespData::Integer(_) => todo!(),
+                            RespData::BulkStr(_) => todo!(),
+                            RespData::Null => todo!(),
+                            RespData::Boolean(_) => todo!(),
+                            RespData::Double(_) => todo!(),
+                            RespData::BulkError(_) => todo!(),
+                            RespData::VerbatimStr(_) => todo!(),
+                            RespData::Map(_) => todo!(),
+                            RespData::Set(_) => todo!(),
                         }
                     }
-                    dbg!(&buffer);
-                    let cmd_from_leader = buffer[..n].to_vec();
-
-                    let s = String::from_utf8_lossy(&cmd_from_leader).to_string();
-                    // if let Ok(tk) = Tokenizer::new(&cmd_from_leader) {
-                    if let Ok(resp_parsed) = RespData::parse(&s) {
-                        let mut resp_parsed_iter = resp_parsed.iter();
-                        while let Some(parsed) = resp_parsed_iter.next() {
-                            // let cmd_from_leader = cmd_from_leader.clone();
-                            match parsed {
-                                RespData::Array(v) => match parse_command(v.to_vec()) {
-                                    Ok(res) => match res {
-                                        Command::Set(o) => {
-                                            let key = o.key;
-                                            let value = o.value;
-                                            let expiry = o.expiry;
-                                            let mut kv_store = store.clone();
-                                            kv_store
-                                                .insert(key.clone(), value.clone(), expiry)
-                                                .await;
-                                            drop(kv_store);
-                                        }
-                                        _ => {}
-                                    },
-                                    Err(_) => todo!(),
-                                },
-                                RespData::String(_) => todo!(),
-                                RespData::ErrorStr(_) => todo!(),
-                                RespData::Integer(_) => todo!(),
-                                RespData::BulkStr(_) => todo!(),
-                                RespData::Null => todo!(),
-                                RespData::Boolean(_) => todo!(),
-                                RespData::Double(_) => todo!(),
-                                RespData::BulkError(_) => todo!(),
-                                RespData::VerbatimStr(_) => todo!(),
-                                RespData::Map(_) => todo!(),
-                                RespData::Set(_) => todo!(),
-                            }
-                        }
-                    } //
-                    buffer.clear();
                 }
+                buffer.clear();
             }
         }
         Err(e) => {
@@ -366,6 +385,7 @@ async fn follower_thread(
             return Err(e);
         }
     }
+    Ok(())
 }
 
 async fn follower_handshake(stream: Arc<Mutex<TcpStream>>) -> anyhow::Result<(), String> {
@@ -388,7 +408,7 @@ async fn follower_handshake(stream: Arc<Mutex<TcpStream>>) -> anyhow::Result<(),
         ],
     ];
     let mut handshake_messages_iter = handshake_messages.iter().enumerate();
-    while let Some((i, message)) = handshake_messages_iter.next() {
+    while let Some((_i, message)) = handshake_messages_iter.next() {
         let _ = stream.write_all(message[0].as_bytes()).await;
         if let Ok(n) = stream.read_buf(&mut buffer).await {
             if n == 0 {

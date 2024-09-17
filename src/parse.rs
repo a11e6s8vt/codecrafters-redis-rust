@@ -9,6 +9,7 @@ use crate::{
 };
 
 pub fn parse_command(v: Vec<RespData>) -> anyhow::Result<Command, CommandError> {
+    dbg!(&v);
     let mut v_iter = v.iter();
     let cmd_str = if let Some(cmd_str) = v_iter.next() {
         match cmd_str {
@@ -181,7 +182,7 @@ pub fn parse_command(v: Vec<RespData>) -> anyhow::Result<Command, CommandError> 
                 return Ok(Command::Save(o));
             }
             "replconf" => match v_iter.next() {
-                Some(RespData::String(s)) => match s.as_str() {
+                Some(RespData::String(s)) => match s.to_ascii_lowercase().as_str() {
                     "listening-port" => {
                         let port = if let Some(RespData::Integer(port)) = v_iter.next() {
                             port
@@ -198,6 +199,13 @@ pub fn parse_command(v: Vec<RespData>) -> anyhow::Result<Command, CommandError> 
                     }
                     "capa" => {
                         let mut args: Vec<String> = vec!["capa".into()];
+                        if let Some(RespData::String(s)) = v_iter.next() {
+                            args.push(s.to_string());
+                        }
+                        return Ok(Command::Replconf(Replconf { args }));
+                    }
+                    "getack" => {
+                        let mut args: Vec<String> = vec!["getack".into()];
                         if let Some(RespData::String(s)) = v_iter.next() {
                             args.push(s.to_string());
                         }
