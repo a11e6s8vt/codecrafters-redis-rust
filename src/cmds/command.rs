@@ -39,3 +39,8 @@ pub struct Replconf {
 pub struct Psync {
     pub args: Vec<String>,
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Wait {
+    pub args: Vec<String>,
+}

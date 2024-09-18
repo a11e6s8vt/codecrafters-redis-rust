@@ -291,6 +291,12 @@ impl Connection {
                                                     self.state.lock().await.peers.insert(self.socket_addr, tx);
                                                     self.is_a_peer = true;
                                                 }
+                                            },
+                                            Command::Wait(o) => {
+                                                let args = o.args;
+                                                let mut args_iter = args.iter();
+                                                let res = format!(":0{}", CRLF);
+                                                responses.push(res.as_bytes().to_vec());
                                             }
                                         },
                                         Err(e) => match e.clone() {

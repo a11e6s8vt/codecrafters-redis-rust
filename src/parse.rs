@@ -3,7 +3,7 @@ use std::time::Duration;
 use crate::{
     cmds::{
         Command, CommandError, Config, Echo, Get, Info, InfoSubCommand, Keys, Ping, Psync,
-        Replconf, Save, Set, SubCommand,
+        Replconf, Save, Set, SubCommand, Wait,
     },
     resp::RespData,
 };
@@ -18,6 +18,7 @@ pub fn parse_command(v: Vec<RespData>) -> anyhow::Result<Command, CommandError> 
     } else {
         None
     };
+    dbg!(&cmd_str);
 
     if let Some(cmd_name) = cmd_str {
         match cmd_name.to_ascii_lowercase().as_str() {
@@ -228,6 +229,20 @@ pub fn parse_command(v: Vec<RespData>) -> anyhow::Result<Command, CommandError> 
                     return Err(CommandError::WrongNumberOfArguments("psync".into()));
                 }
                 return Ok(Command::Psync(Psync { args }));
+            }
+            "wait" => {
+                let mut args: Vec<String> = Vec::new();
+                if let Some(RespData::Integer(s)) = v_iter.next() {
+                    args.push(s.to_string());
+                }
+
+                if let Some(RespData::Integer(s)) = v_iter.next() {
+                    args.push(s.to_string());
+                }
+                if let Some(_) = v_iter.next() {
+                    return Err(CommandError::WrongNumberOfArguments("psync".into()));
+                }
+                return Ok(Command::Wait(Wait { args }));
             }
             _ => {}
         }
