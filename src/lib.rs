@@ -8,13 +8,18 @@ mod resp;
 
 use core::str;
 use std::{
-    any::Any, collections::HashMap, future::Future, io, net::SocketAddr, ops::Deref, pin::Pin,
-    process::Output, sync::Arc,
+    any::Any,
+    future::Future,
+    pin::Pin,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
 };
 
 use bytes::BytesMut;
 pub use cli::Cli;
-use cmds::{Command, CommandError, InfoSubCommand, SubCommand};
+use cmds::Command;
 use connection::Connection;
 use database::Shared;
 pub use database::{load_from_rdb, KeyValueStore};
@@ -40,6 +45,7 @@ pub struct Follower {
     pub bind_address: String,
     pub listening_port: u16,
     pub leader_addr: String,
+    pub bytes_received: Arc<AtomicUsize>,
 }
 
 impl Follower {
@@ -70,6 +76,7 @@ impl Follower {
             bind_address,
             listening_port,
             leader_addr,
+            bytes_received: Arc::new(AtomicUsize::new(0)),
         }
     }
 }
@@ -107,9 +114,13 @@ impl<'a> RedisInstance for Follower {
 
             let kv_store_follower = kv_store.clone();
 
+            // Handle the follower thread
             let leader_addr = self.leader_addr.clone();
+            let bytes_received = self.bytes_received.clone();
             let kv_store_follower = kv_store_follower.clone();
-            tokio::spawn(async { follower_thread(leader_addr, kv_store_follower).await });
+            tokio::spawn(async {
+                follower_thread(leader_addr, bytes_received, kv_store_follower).await
+            });
 
             let kv_store_client = kv_store.clone();
             // Handle Multiple Clients in a loop
@@ -124,9 +135,10 @@ impl<'a> RedisInstance for Follower {
                     "Follower: Accepted connection from {}",
                     socket_addr.ip().to_string()
                 );
+
+                // Handle clients
                 let kv_store_client = kv_store_client.clone();
                 let state = Arc::clone(&state);
-                // tokio::spawn(handle_client(tcp_stream, socket_addr, kv_store, None));
                 tokio::spawn(async move {
                     let mut conn = Connection::new(state, tcp_stream, socket_addr);
                     let _ = conn.handle(kv_store_client).await;
@@ -221,9 +233,9 @@ impl RedisInstance for Leader {
                     .expect("Accepting connection failed");
                 log::info!("Accepted connection from {}", socket_addr.ip().to_string());
 
+                // Handle Clients
                 let kv_store_client = kv_store.clone();
                 let state_client_handles = Arc::clone(&state);
-
                 tokio::spawn(async move {
                     let mut conn = Connection::new(state_client_handles, tcp_stream, socket_addr);
                     let _ = conn.handle(kv_store_client).await;
@@ -299,6 +311,7 @@ pub async fn start_server(
 
 async fn follower_thread(
     leader_addr: String,
+    bytes_received: Arc<AtomicUsize>,
     store: KeyValueStore<String, String>,
 ) -> anyhow::Result<(), String> {
     let stream = Arc::new(Mutex::new(TcpStream::connect(leader_addr).await.unwrap()));
@@ -306,7 +319,6 @@ async fn follower_thread(
 
     match follower_handshake(stream.clone()).await {
         Ok(_) => {
-            dbg!("After handshake");
             let mut stream = stream.lock().await;
             while let Ok(n) = stream.read_buf(&mut buffer).await {
                 if n == 0 {
@@ -316,53 +328,59 @@ async fn follower_thread(
                         return Err("Follower thread failed!".to_string());
                     }
                 }
-                dbg!(&buffer);
+                // check if the buffer contains `getack` command. We will need to omit length of one `getack`
+                // from the total_bytes as each getack calculates length of commands processed so far excluding the
+                // current get ack
                 let cmd_from_leader = buffer[..n].to_vec();
 
                 let s = String::from_utf8_lossy(&cmd_from_leader).to_string();
                 if let Ok(resp_parsed) = RespData::parse(&s) {
+                    let total_bytes = calculate_bytes(bytes_received.clone(), &resp_parsed);
                     let mut resp_parsed_iter = resp_parsed.iter();
                     while let Some(parsed) = resp_parsed_iter.next() {
-                        dbg!(parsed);
-                        // let cmd_from_leader = cmd_from_leader.clone();
                         match parsed {
-                            RespData::Array(v) => match parse_command(v.to_vec()) {
-                                Ok(res) => match res {
-                                    Command::Set(o) => {
-                                        let key = o.key;
-                                        let value = o.value;
-                                        let expiry = o.expiry;
-                                        let mut kv_store = store.clone();
-                                        kv_store.insert(key.clone(), value.clone(), expiry).await;
-                                        drop(kv_store);
-                                    }
-                                    Command::Replconf(o) => {
-                                        let args = o.args;
-                                        let mut args_iter = args.iter();
-                                        let first =
-                                            args_iter.next().expect("First cannot be empty");
-                                        dbg!(&first);
-                                        match first.as_str() {
-                                            "getack" => {
-                                                let opt = args_iter
-                                                    .next()
-                                                    .expect("Expect a valid port number");
-                                                // *3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n.
-                                                let response = format!(
-                                                    "*3{}$8{}REPLCONF{}$3{}ACK{}$1{}0{}",
-                                                    CRLF, CRLF, CRLF, CRLF, CRLF, CRLF, CRLF
-                                                )
-                                                .as_bytes()
-                                                .to_vec();
-                                                let _ = stream.write_all(&response).await;
-                                            }
-                                            _ => {}
+                            RespData::Array(v) => {
+                                match parse_command(v.to_vec()) {
+                                    Ok(res) => match res {
+                                        Command::Set(o) => {
+                                            let key = o.key;
+                                            let value = o.value;
+                                            let expiry = o.expiry;
+                                            let mut kv_store = store.clone();
+                                            kv_store
+                                                .insert(key.clone(), value.clone(), expiry)
+                                                .await;
+                                            drop(kv_store);
                                         }
-                                    }
-                                    _ => {}
-                                },
-                                Err(_) => todo!(),
-                            },
+                                        Command::Replconf(o) => {
+                                            let args = o.args;
+                                            let mut args_iter = args.iter();
+                                            let first =
+                                                args_iter.next().expect("First cannot be empty");
+                                            match first.as_str() {
+                                                "getack" => {
+                                                    let opt = args_iter
+                                                        .next()
+                                                        .expect("Expect a valid port number");
+                                                    match opt.to_ascii_lowercase().as_str() {
+                                                        "*" => {
+                                                            let response = format!("*3{}$8{}REPLCONF{}$3{}ACK{}${}{}{}{}", CRLF, CRLF, CRLF, CRLF, CRLF, total_bytes.to_string().len(),CRLF, total_bytes, CRLF)
+                                                            .as_bytes()
+                                                            .to_vec();
+                                                            let _ =
+                                                                stream.write_all(&response).await;
+                                                        }
+                                                        _ => {}
+                                                    }
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                        _ => {}
+                                    },
+                                    Err(e) => log::error!("{:?}", e),
+                                }
+                            }
                             RespData::String(_) => todo!(),
                             RespData::ErrorStr(_) => todo!(),
                             RespData::Integer(_) => todo!(),
@@ -454,4 +472,49 @@ async fn follower_handshake(stream: Arc<Mutex<TcpStream>>) -> anyhow::Result<(),
     drop(stream);
 
     Ok(())
+}
+
+fn calculate_bytes(bytes_received: Arc<AtomicUsize>, parsed: &Vec<RespData>) -> usize {
+    let mut total_bytes: usize = 0;
+    for data in parsed {
+        match data {
+            RespData::String(_) => todo!(),
+            RespData::ErrorStr(_) => todo!(),
+            RespData::Integer(_) => todo!(),
+            RespData::BulkStr(bytes) => todo!(),
+            RespData::Array(vec) => {
+                let mut cmd = String::from(&format!("*{}\r\n", vec.len()));
+                for item in vec {
+                    match item {
+                        RespData::String(s) => {
+                            cmd.push_str(&format!("${}\r\n{}\r\n", s.len(), s));
+                        }
+                        RespData::ErrorStr(_) => todo!(),
+                        RespData::Integer(num) => {
+                            cmd.push_str(&format!("${}\r\n{}\r\n", num.to_string().len(), num));
+                        }
+                        RespData::BulkStr(bytes) => todo!(),
+                        RespData::Array(vec) => todo!(),
+                        RespData::Null => todo!(),
+                        RespData::Boolean(_) => todo!(),
+                        RespData::Double(_) => todo!(),
+                        RespData::BulkError(bytes) => todo!(),
+                        RespData::VerbatimStr(bytes) => todo!(),
+                        RespData::Map(hash_map) => todo!(),
+                        RespData::Set(hash_set) => todo!(),
+                    }
+                }
+                total_bytes = bytes_received.fetch_add(cmd.len(), Ordering::Relaxed);
+            }
+            RespData::Null => todo!(),
+            RespData::Boolean(_) => todo!(),
+            RespData::Double(_) => todo!(),
+            RespData::BulkError(bytes) => todo!(),
+            RespData::VerbatimStr(bytes) => todo!(),
+            RespData::Map(hash_map) => todo!(),
+            RespData::Set(hash_set) => todo!(),
+        }
+    }
+
+    total_bytes
 }

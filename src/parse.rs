@@ -9,7 +9,6 @@ use crate::{
 };
 
 pub fn parse_command(v: Vec<RespData>) -> anyhow::Result<Command, CommandError> {
-    dbg!(&v);
     let mut v_iter = v.iter();
     let cmd_str = if let Some(cmd_str) = v_iter.next() {
         match cmd_str {
