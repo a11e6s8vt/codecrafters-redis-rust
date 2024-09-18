@@ -33,6 +33,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufWriter},
     net::{TcpListener, TcpStream},
     sync::Mutex,
+    time::{self, Duration},
 };
 
 const CHUNK_SIZE: usize = 16 * 1024;
@@ -313,97 +314,136 @@ async fn follower_thread(
     leader_addr: String,
     bytes_received: Arc<AtomicUsize>,
     store: KeyValueStore<String, String>,
-) -> anyhow::Result<(), String> {
-    let stream = Arc::new(Mutex::new(TcpStream::connect(leader_addr).await.unwrap()));
+) -> anyhow::Result<()> {
+    // let stream = Arc::new(Mutex::new(TcpStream::connect(leader_addr).await.unwrap()));
     let mut buffer = BytesMut::with_capacity(16 * 1024);
+    let stream = match follower_connect(leader_addr).await {
+        Ok(stream) => stream,
+        Err(e) => {
+            eprintln!("{}", e);
+            return Err(e.into());
+        }
+    };
 
-    match follower_handshake(stream.clone()).await {
-        Ok(_) => {
-            let mut stream = stream.lock().await;
-            while let Ok(n) = stream.read_buf(&mut buffer).await {
-                if n == 0 {
-                    if buffer.is_empty() {
-                        return Ok(());
-                    } else {
-                        return Err("Follower thread failed!".to_string());
-                    }
+    let mut stream = stream.lock().await;
+    loop {
+        if let Ok(n) = stream.read_buf(&mut buffer).await {
+            if n == 0 {
+                if buffer.is_empty() {
+                    return Ok(());
+                } else {
+                    return Err(anyhow::format_err!("Follower thread failed!".to_string()));
                 }
-                // check if the buffer contains `getack` command. We will need to omit length of one `getack`
-                // from the total_bytes as each getack calculates length of commands processed so far excluding the
-                // current get ack
-                let cmd_from_leader = buffer[..n].to_vec();
+            }
+            // check if the buffer contains `getack` command. We will need to omit length of one `getack`
+            // from the total_bytes as each getack calculates length of commands processed so far excluding the
+            // current get ack
+            let cmd_from_leader = buffer[..n].to_vec();
 
-                let s = String::from_utf8_lossy(&cmd_from_leader).to_string();
-                if let Ok(resp_parsed) = RespData::parse(&s) {
-                    let total_bytes = calculate_bytes(bytes_received.clone(), &resp_parsed);
-                    let mut resp_parsed_iter = resp_parsed.iter();
-                    while let Some(parsed) = resp_parsed_iter.next() {
-                        match parsed {
-                            RespData::Array(v) => {
-                                match parse_command(v.to_vec()) {
-                                    Ok(res) => match res {
-                                        Command::Set(o) => {
-                                            let key = o.key;
-                                            let value = o.value;
-                                            let expiry = o.expiry;
-                                            let mut kv_store = store.clone();
-                                            kv_store
-                                                .insert(key.clone(), value.clone(), expiry)
-                                                .await;
-                                            drop(kv_store);
-                                        }
-                                        Command::Replconf(o) => {
-                                            let args = o.args;
-                                            let mut args_iter = args.iter();
-                                            let first =
-                                                args_iter.next().expect("First cannot be empty");
-                                            match first.as_str() {
-                                                "getack" => {
-                                                    let opt = args_iter
-                                                        .next()
-                                                        .expect("Expect a valid port number");
-                                                    match opt.to_ascii_lowercase().as_str() {
-                                                        "*" => {
-                                                            let response = format!("*3{}$8{}REPLCONF{}$3{}ACK{}${}{}{}{}", CRLF, CRLF, CRLF, CRLF, CRLF, total_bytes.to_string().len(),CRLF, total_bytes, CRLF)
-                                                            .as_bytes()
-                                                            .to_vec();
-                                                            let _ =
-                                                                stream.write_all(&response).await;
-                                                        }
-                                                        _ => {}
-                                                    }
+            let s = String::from_utf8_lossy(&cmd_from_leader).to_string();
+            if let Ok(resp_parsed) = RespData::parse(&s) {
+                let total_bytes = calculate_bytes(bytes_received.clone(), &resp_parsed);
+                let mut resp_parsed_iter = resp_parsed.iter();
+                while let Some(parsed) = resp_parsed_iter.next() {
+                    match parsed {
+                        RespData::Array(v) => match parse_command(v.to_vec()) {
+                            Ok(res) => match res {
+                                Command::Set(o) => {
+                                    let key = o.key;
+                                    let value = o.value;
+                                    let expiry = o.expiry;
+                                    let mut kv_store = store.clone();
+                                    kv_store.insert(key.clone(), value.clone(), expiry).await;
+                                    drop(kv_store);
+                                }
+                                Command::Replconf(o) => {
+                                    let args = o.args;
+                                    let mut args_iter = args.iter();
+                                    let first = args_iter.next().expect("First cannot be empty");
+                                    match first.as_str() {
+                                        "getack" => {
+                                            let opt = args_iter
+                                                .next()
+                                                .expect("Expect a valid port number");
+                                            match opt.to_ascii_lowercase().as_str() {
+                                                "*" => {
+                                                    let response = format!(
+                                                        "*3{}$8{}REPLCONF{}$3{}ACK{}${}{}{}{}",
+                                                        CRLF,
+                                                        CRLF,
+                                                        CRLF,
+                                                        CRLF,
+                                                        CRLF,
+                                                        total_bytes.to_string().len(),
+                                                        CRLF,
+                                                        total_bytes,
+                                                        CRLF
+                                                    )
+                                                    .as_bytes()
+                                                    .to_vec();
+                                                    let _ = stream.write_all(&response).await;
                                                 }
                                                 _ => {}
                                             }
                                         }
                                         _ => {}
-                                    },
-                                    Err(e) => log::error!("{:?}", e),
+                                    }
                                 }
-                            }
-                            RespData::String(_) => todo!(),
-                            RespData::ErrorStr(_) => todo!(),
-                            RespData::Integer(_) => todo!(),
-                            RespData::BulkStr(_) => todo!(),
-                            RespData::Null => todo!(),
-                            RespData::Boolean(_) => todo!(),
-                            RespData::Double(_) => todo!(),
-                            RespData::BulkError(_) => todo!(),
-                            RespData::VerbatimStr(_) => todo!(),
-                            RespData::Map(_) => todo!(),
-                            RespData::Set(_) => todo!(),
+                                _ => {}
+                            },
+                            Err(e) => log::error!("{:?}", e),
+                        },
+                        RespData::String(_) => todo!(),
+                        RespData::ErrorStr(_) => todo!(),
+                        RespData::Integer(_) => todo!(),
+                        RespData::BulkStr(_) => todo!(),
+                        RespData::Null => todo!(),
+                        RespData::Boolean(_) => todo!(),
+                        RespData::Double(_) => todo!(),
+                        RespData::BulkError(_) => todo!(),
+                        RespData::VerbatimStr(_) => todo!(),
+                        RespData::Map(_) => todo!(),
+                        RespData::Set(_) => todo!(),
+                    }
+                }
+            }
+            buffer.clear();
+        }
+    }
+}
+
+async fn follower_connect(leader_addr: String) -> anyhow::Result<Arc<Mutex<TcpStream>>> {
+    let mut backoff = 1;
+
+    loop {
+        //let stream = Arc::new(Mutex::new(TcpStream::connect(leader_addr).await.unwrap()));
+        match TcpStream::connect(leader_addr.clone()).await {
+            Ok(socket) => {
+                let stream = Arc::new(Mutex::new(socket));
+                match follower_handshake(stream.clone()).await {
+                    Ok(_) => return Ok(stream),
+                    Err(err) => {
+                        if backoff > 64 {
+                            // Accept has failed too many times. Return the error.
+                            return Err(anyhow::format_err!(err));
                         }
                     }
                 }
-                buffer.clear();
+            }
+            Err(err) => {
+                if backoff > 64 {
+                    // Accept has failed too many times. Return the error.
+                    return Err(err.into());
+                }
             }
         }
-        Err(e) => {
-            eprintln!("{}", e);
-            return Err(e);
-        }
+
+        // Pause execution until the back off period elapses.
+        time::sleep(Duration::from_secs(backoff)).await;
+
+        // Double the back off
+        backoff *= 2;
     }
-    Ok(())
 }
 
 async fn follower_handshake(stream: Arc<Mutex<TcpStream>>) -> anyhow::Result<(), String> {

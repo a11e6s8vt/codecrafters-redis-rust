@@ -295,7 +295,8 @@ impl Connection {
                                             Command::Wait(o) => {
                                                 let args = o.args;
                                                 let mut args_iter = args.iter();
-                                                let res = format!(":0{}", CRLF);
+                                                let n = self.state.lock().await.peers.len();
+                                                let res = format!(":{}{}", n, CRLF);
                                                 responses.push(res.as_bytes().to_vec());
                                             }
                                         },
