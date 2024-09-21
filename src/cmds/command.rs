@@ -44,3 +44,8 @@ pub struct Psync {
 pub struct Wait {
     pub args: Vec<String>,
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Type {
+    pub key: String,
+}

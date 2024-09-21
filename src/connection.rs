@@ -377,6 +377,15 @@ async fn process_socket_read(
                                 }
                             }
                         }
+                        Command::Type(o) => {
+                            let key = o.key;
+                            let mut kv_store = kv_store.clone();
+                            if let Some(_value) = kv_store.get(&key).await {
+                                responses.push(format!("+string{}", CRLF,).as_bytes().to_vec());
+                            } else {
+                                responses.push(format!("+none{}", CRLF).as_bytes().to_vec());
+                            }
+                        }
                         Command::Wait(o) => {
                             let args = o.args;
                             let mut args_iter = args.iter();
