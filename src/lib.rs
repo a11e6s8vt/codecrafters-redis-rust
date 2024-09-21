@@ -9,6 +9,8 @@ mod resp;
 use core::str;
 use std::{
     any::Any,
+    collections::VecDeque,
+    f32::MAX,
     future::Future,
     pin::Pin,
     sync::{
@@ -47,6 +49,15 @@ pub struct Follower {
     pub listening_port: u16,
     pub leader_addr: String,
     pub bytes_received: Arc<AtomicUsize>,
+    pub commands_processed: Arc<Mutex<VecDeque<String>>>,
+}
+
+pub struct Leader {
+    pub bind_address: String,
+    pub listening_port: u16,
+    pub dir_name: Option<String>,
+    pub dbfilename: Option<String>,
+    pub peers: Vec<Follower>,
 }
 
 impl Follower {
@@ -78,6 +89,7 @@ impl Follower {
             listening_port,
             leader_addr,
             bytes_received: Arc::new(AtomicUsize::new(0)),
+            commands_processed: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 }
@@ -104,16 +116,9 @@ impl<'a> RedisInstance for Follower {
             // initialise the DB
             //let db: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
             let kv_store: KeyValueStore<String, String> = KeyValueStore::new();
-            let state = Arc::new(Mutex::new(Shared::new()));
-
-            // Create TCP Listener
-            let listener_addr = format!("{}:{}", self.bind_address, self.listening_port);
-            let listener = TcpListener::bind(listener_addr.to_owned())
-                .await
-                .expect("Binding to listener address failed!");
-            log::info!("Follower running on {}...", listener_addr);
 
             let kv_store_follower = kv_store.clone();
+            let kv_store_client = kv_store.clone();
 
             // Handle the follower thread
             let leader_addr = self.leader_addr.clone();
@@ -123,7 +128,14 @@ impl<'a> RedisInstance for Follower {
                 follower_thread(leader_addr, bytes_received, kv_store_follower).await
             });
 
-            let kv_store_client = kv_store.clone();
+            // Redis clients for the Follower instance
+            let state = Arc::new(Mutex::new(Shared::new()));
+            // Create TCP Listener
+            let listener_addr = format!("{}:{}", self.bind_address, self.listening_port);
+            let listener = TcpListener::bind(listener_addr.to_owned())
+                .await
+                .expect("Binding to listener address failed!");
+            log::info!("Follower running on {}...", listener_addr);
             // Handle Multiple Clients in a loop
             loop {
                 // it's a follower instance
@@ -147,14 +159,6 @@ impl<'a> RedisInstance for Follower {
             }
         })
     }
-}
-
-pub struct Leader {
-    pub bind_address: String,
-    pub listening_port: u16,
-    pub dir_name: Option<String>,
-    pub dbfilename: Option<String>,
-    pub peers: Vec<Follower>,
 }
 
 impl Leader {
@@ -315,8 +319,6 @@ async fn follower_thread(
     bytes_received: Arc<AtomicUsize>,
     store: KeyValueStore<String, String>,
 ) -> anyhow::Result<()> {
-    // let stream = Arc::new(Mutex::new(TcpStream::connect(leader_addr).await.unwrap()));
-    let mut buffer = BytesMut::with_capacity(16 * 1024);
     let stream = match follower_connect(leader_addr).await {
         Ok(stream) => stream,
         Err(e) => {
@@ -325,6 +327,7 @@ async fn follower_thread(
         }
     };
 
+    let mut buffer = BytesMut::with_capacity(16 * 1024);
     let mut stream = stream.lock().await;
     loop {
         if let Ok(n) = stream.read_buf(&mut buffer).await {
@@ -341,10 +344,14 @@ async fn follower_thread(
             let cmd_from_leader = buffer[..n].to_vec();
 
             let s = String::from_utf8_lossy(&cmd_from_leader).to_string();
+            dbg!(&s);
+
             if let Ok(resp_parsed) = RespData::parse(&s) {
                 let total_bytes = calculate_bytes(bytes_received.clone(), &resp_parsed);
+                // let resp_parsed_clone = resp_parsed.clone();
                 let mut resp_parsed_iter = resp_parsed.iter();
                 while let Some(parsed) = resp_parsed_iter.next() {
+                    dbg!(&parsed);
                     match parsed {
                         RespData::Array(v) => match parse_command(v.to_vec()) {
                             Ok(res) => match res {
@@ -360,8 +367,9 @@ async fn follower_thread(
                                     let args = o.args;
                                     let mut args_iter = args.iter();
                                     let first = args_iter.next().expect("First cannot be empty");
-                                    match first.as_str() {
+                                    match first.to_ascii_lowercase().as_str() {
                                         "getack" => {
+                                            dbg!("getack");
                                             let opt = args_iter
                                                 .next()
                                                 .expect("Expect a valid port number");
@@ -416,7 +424,6 @@ async fn follower_connect(leader_addr: String) -> anyhow::Result<Arc<Mutex<TcpSt
     let mut backoff = 1;
 
     loop {
-        //let stream = Arc::new(Mutex::new(TcpStream::connect(leader_addr).await.unwrap()));
         match TcpStream::connect(leader_addr.clone()).await {
             Ok(socket) => {
                 let stream = Arc::new(Mutex::new(socket));
@@ -450,24 +457,24 @@ async fn follower_handshake(stream: Arc<Mutex<TcpStream>>) -> anyhow::Result<(),
     // Hashshake
     let mut stream = stream.lock().await;
     let mut buffer = BytesMut::with_capacity(1 * 512);
-    let handshake_messages = vec![
-        vec!["*1\r\n$4\r\nPING\r\n".to_string(), "+PONG\r\n".to_string()],
-        vec![
-            "*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$4\r\n6380\r\n".to_string(),
-            "+OK\r\n".to_string(),
-        ],
-        vec![
-            "*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n".to_string(),
-            "+OK\r\n".to_string(),
-        ],
-        vec![
-            "*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n".to_string(),
-            "+FULLRESYNC".to_string(),
-        ],
+    let handshake_messages_part1 = vec![
+        "*1\r\n$4\r\nPING\r\n".to_string(),
+        "*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$4\r\n6380\r\n".to_string(),
+        "*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n".to_string(),
     ];
-    let mut handshake_messages_iter = handshake_messages.iter().enumerate();
-    while let Some((_i, message)) = handshake_messages_iter.next() {
-        let _ = stream.write_all(message[0].as_bytes()).await;
+    let handshake_messages_part1_responses = vec![
+        "+PONG\r\n".to_string(),
+        "+OK\r\n".to_string(),
+        "+OK\r\n".to_string(),
+    ];
+    let handshake_messages_part2 = "*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n".to_string();
+
+    // Handshake first part
+    for (msg, response) in handshake_messages_part1
+        .iter()
+        .zip(handshake_messages_part1_responses.iter())
+    {
+        let _ = stream.write_all(msg.as_bytes()).await;
         if let Ok(n) = stream.read_buf(&mut buffer).await {
             if n == 0 {
                 if buffer.is_empty() {
@@ -476,39 +483,62 @@ async fn follower_handshake(stream: Arc<Mutex<TcpStream>>) -> anyhow::Result<(),
                     return Err("Handshake failed!".to_string());
                 }
             }
-
-            let cmd_from_leader = buffer[..n].to_vec();
-
-            let s = String::from_utf8_lossy(&cmd_from_leader).to_string();
-            // Sometimes the response to `PSYNC ? -1` comes in a single network read
-            // In that case, the `+FULLRESYNC` and the database contents will be in the same buffer
-            // Our resp parser will parse it correctly, but the result will have two items.
-            let parsed = &parse_handshake_response(&s)[0];
-            let parsed_len = parsed.len();
-            if parsed_len == 1 {
-                if !message[1].contains(parsed[0].split(" ").collect::<Vec<&str>>()[0]) {
-                    return Err("Handshake failed!".to_string());
-                }
-            } else if parsed_len == 2 {
-                if !parsed[0].starts_with("FULLRESYNC") && !parsed[1].starts_with("REDIS") {
-                    return Err("Handshake failed!".to_string());
-                } else {
-                    log::info!("Handshake Completed!!!");
-                    return Ok(());
-                }
+            if !std::str::from_utf8(&buffer[..n])
+                .expect("Utf8Error")
+                .contains(response.as_str())
+            {
+                return Err("Handshake failed!".to_string());
             }
         }
         buffer.clear();
     }
-    if let Ok(n) = stream.read_buf(&mut buffer).await {
-        let response = String::from_utf8_lossy(&buffer[..n]).to_string();
-        if !response.contains("REDIS") {
-            return Err("Handshake Failed!".into());
-        } else {
-            log::info!("Handshake Completed!!!");
+
+    // Handshake Second part
+    let _ = stream.write_all(handshake_messages_part2.as_bytes()).await;
+    // Leader response `+FULLRESYNC <REPL_ID> 0\r\n` is 56 bytes
+    let mut buffer = [0; 56];
+    let _ = stream.read_exact(&mut buffer).await;
+    if let Ok(leader_response) = std::str::from_utf8(&buffer) {
+        dbg!(&leader_response);
+        if !leader_response.to_ascii_lowercase().contains("fullresync") {
+            return Err("Handshake failed!".to_string());
         }
     }
-    buffer.clear();
+
+    // Leader send the empty RDB file
+    // Next five byte indicates is the length of the RDB. It ends with '\r\n'
+    let mut buffer: Vec<u8> = Vec::new();
+    while let Ok(byte) = stream.read_u8().await {
+        if byte as char != '\n' {
+            buffer.push(byte);
+        } else {
+            buffer.push(byte);
+            break;
+        }
+    }
+
+    let rdb_len = if let Ok(parsed) = RespData::parse(&String::from_utf8_lossy(&buffer).to_string())
+    {
+        let rdb_len = match parsed[0] {
+            RespData::Integer(num) => num as usize,
+            _ => return Err("Handshake failed!".to_string()),
+        };
+        rdb_len
+    } else {
+        return Err("Handshake failed!".to_string());
+    };
+
+    // Read `rdb_len` bytes
+    let mut buffer: Vec<u8> = vec![0; rdb_len];
+    if let Ok(_) = stream.read_exact(&mut buffer).await {
+        let magic_string = &buffer[..5];
+        if let Ok(magic_string) = std::str::from_utf8(magic_string) {
+            if !magic_string.to_ascii_lowercase().contains("redis") {
+                return Err("Handshake failed!".to_string());
+            }
+        }
+    }
+
     drop(stream);
 
     Ok(())

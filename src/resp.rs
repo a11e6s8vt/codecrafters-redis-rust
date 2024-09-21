@@ -218,7 +218,9 @@ impl RespData {
                     Token::Tilde => todo!(),
                     Token::GreaterThan => todo!(),
                     Token::Question => todo!(),
-                    Token::Num(_) => todo!(),
+                    Token::Num(num) => {
+                        result.push(RespData::Integer(num));
+                    }
                     Token::Word(_) => {}
                     Token::NewLine => todo!(),
                     Token::CarriageReturn => todo!(),

@@ -1,24 +1,22 @@
 use crate::{
     cmds::{Command, CommandError, InfoSubCommand, SubCommand},
-    database::{self, KeyValueStore, Shared},
+    database::{self, KeyValueStore, Peer, Shared},
     parse::parse_command,
     resp::{RespError, Tokenizer},
     Request,
 };
 use bytes::{BufMut, BytesMut};
 use core::net::SocketAddr;
-use std::{sync::Arc, thread, time::Duration};
+use std::collections::VecDeque;
+use std::sync::{atomic::AtomicUsize, Arc};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
-    net::{
-        tcp::{ReadHalf, WriteHalf},
-        TcpStream,
-    },
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpStream,
     sync::{
         mpsc::{self, UnboundedSender},
         Mutex,
     },
-    time,
+    time::{self, Duration},
 };
 
 use crate::global::STATE;
@@ -63,6 +61,14 @@ impl Connection {
     ) -> anyhow::Result<(), RespError> {
         let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
+        // Stores handshake messages in sequence and identify a replica
+        // if the vec size becomes four. Handshake steps:
+        // (a) PING - "*1\r\n$4\r\nPING\r\n"
+        // (b) REPLCONF listening-port <PORT> - "*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$4\r\n6380\r\n"
+        // (c) REPLCONF capa psync2 - "*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n"
+        // (d) PSYNC ? -1 - "*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n"
+        let mut identify_replica: Vec<(SocketAddr, String)> = Vec::new();
+
         loop {
             tokio::select! {
                 //while let Ok(num_bytes) = self.stream.read_buf(&mut self.buffer).await {
@@ -79,7 +85,7 @@ impl Connection {
                             }
                         }
                         let str_from_network = self.buffer[..num_bytes_read].to_vec();
-                        let responses = process_socket_read(&str_from_network, self.state.clone(), &kv_store, self.socket_addr, tx.clone()).await?;
+                        let responses = process_socket_read(&str_from_network, self.state.clone(), &kv_store, self.socket_addr, tx.clone(), &mut identify_replica).await?;
                         self.write(responses).await;
                         self.buffer.clear();
                     }
@@ -107,9 +113,11 @@ async fn process_socket_read(
     kv_store: &KeyValueStore<String, String>,
     socket_addr: SocketAddr,
     tx: UnboundedSender<Vec<u8>>,
+    identify_replica: &mut Vec<(SocketAddr, String)>,
 ) -> anyhow::Result<Vec<Vec<u8>>, RespError> {
     let mut responses: Vec<Vec<u8>> = Vec::new();
     let s = String::from_utf8_lossy(&str_from_network).to_string();
+    dbg!(&s);
     if let Ok(resp_parsed) = RespData::parse(&s) {
         let mut resp_parsed_iter = resp_parsed.iter();
         while let Some(parsed) = resp_parsed_iter.next() {
@@ -124,6 +132,9 @@ async fn process_socket_read(
                                 );
                             } else {
                                 responses.push(format!("+PONG{}", CRLF).as_bytes().to_vec());
+                            }
+                            if identify_replica.is_empty() {
+                                identify_replica.push((socket_addr, s.clone()));
                             }
                         }
                         Command::Echo(o) => {
@@ -171,7 +182,6 @@ async fn process_socket_read(
                             drop(kv_store);
                             // replicate data to peers
                             state.lock().await.broadcast(str_from_network).await;
-                            // replicate_to_peers(&replication_message, peers.clone()).await;
                         }
                         Command::Config(o) => {
                             dbg!(o.clone());
@@ -268,11 +278,20 @@ async fn process_socket_read(
                             let args = o.args;
                             let mut args_iter = args.iter();
                             let first = args_iter.next().expect("First cannot be empty");
-                            dbg!(&first);
-                            match first.as_str() {
+
+                            match first.to_ascii_lowercase().as_str() {
                                 "capa" => {
                                     if args_iter.next() == Some(&"psync2".to_string()) {
                                         responses.push(format!("+OK{}", CRLF).as_bytes().to_vec())
+                                    }
+                                    if identify_replica.len() == 2 {
+                                        if let Some(t) = identify_replica.last() {
+                                            if t.0 == socket_addr
+                                                && t.1.to_ascii_lowercase().contains("replconf")
+                                            {
+                                                identify_replica.push((socket_addr, s.clone()));
+                                            }
+                                        }
                                     }
                                 }
                                 "listening-port" => {
@@ -281,6 +300,28 @@ async fn process_socket_read(
                                     if let Ok(_port) = port.parse::<u16>() {
                                         responses.push(format!("+OK{}", CRLF).as_bytes().to_vec());
                                     }
+                                    if identify_replica.len() == 1 {
+                                        if let Some(t) = identify_replica.last() {
+                                            if t.0 == socket_addr
+                                                && t.1.to_ascii_lowercase().contains("ping")
+                                            {
+                                                identify_replica.push((socket_addr, s.clone()));
+                                            }
+                                        }
+                                    }
+                                }
+                                "ack" => {
+                                    let bytes_written =
+                                        args_iter.next().expect("Expect a valid entry");
+                                    dbg!(bytes_written);
+                                    let bytes_written = bytes_written
+                                        .parse::<usize>()
+                                        .expect("expect a valid number as bytes");
+                                    state
+                                        .lock()
+                                        .await
+                                        .update_bytes_written(socket_addr, bytes_written)
+                                        .await;
                                 }
                                 _ => {}
                             }
@@ -315,20 +356,59 @@ async fn process_socket_read(
                                 res.extend(rdb_contents);
                                 responses.push(res);
                                 let tx = tx.clone();
-                                state.lock().await.peers.insert(socket_addr, tx);
-                                // is_a_peer = true;
+
+                                if identify_replica.len() == 3 {
+                                    if let Some(t) = identify_replica.last() {
+                                        if t.0 == socket_addr
+                                            && t.1.to_ascii_lowercase().contains("replconf")
+                                        // means the connected client is a replica instance.
+                                        {
+                                            identify_replica.push((socket_addr, s.clone()));
+                                            let peer = Peer {
+                                                sender: tx,
+                                                bytes_sent: AtomicUsize::new(0),
+                                                bytes_written: AtomicUsize::new(0),
+                                                commands_processed: VecDeque::with_capacity(5),
+                                            };
+                                            dbg!("peer address: {}", socket_addr);
+                                            state.lock().await.peers.insert(socket_addr, peer);
+                                        }
+                                    }
+                                }
                             }
                         }
                         Command::Wait(o) => {
                             let args = o.args;
                             let mut args_iter = args.iter();
-                            let numreplicas =
-                                args_iter.next().expect("`numreplicas` cannot be empty");
+                            let numreplicas = args_iter
+                                .next()
+                                .expect("`numreplicas` cannot be empty")
+                                .parse::<usize>()
+                                .expect("`numreplicas` should be number");
                             let timeout = args_iter.next().expect("`timeout` cannot be empty");
-                            let timeout =
-                                timeout.parse::<u64>().expect("timeout should be a number");
-                            time::sleep(Duration::from_millis(timeout)).await;
-                            let n = state.lock().await.peers.len();
+                            let timeout = timeout
+                                .parse::<u64>()
+                                .expect("`timeout` should be a number");
+
+                            let n = if numreplicas == 0 {
+                                state.lock().await.peers.len()
+                            } else {
+                                let msg = "*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n"
+                                    .as_bytes()
+                                    .to_vec();
+                                let offset_len = msg.len();
+                                //let mut state = state.lock().await;
+                                state.lock().await.broadcast(msg).await;
+                                time::sleep(Duration::from_millis(timeout)).await;
+                                let n = if state.lock().await.count_commands_processed().await == 0
+                                {
+                                    state.lock().await.peers.len()
+                                } else {
+                                    state.lock().await.verify_propagation(offset_len).await
+                                };
+                                n
+                            };
+                            dbg!(n);
                             let res = format!(":{}{}", n, CRLF);
                             responses.push(res.as_bytes().to_vec());
                         }
