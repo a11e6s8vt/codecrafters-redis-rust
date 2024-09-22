@@ -6,13 +6,13 @@ mod global;
 mod parse;
 mod resp;
 
-use core::str;
 use std::{
     any::Any,
     collections::VecDeque,
     f32::MAX,
     future::Future,
     pin::Pin,
+    str,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -23,8 +23,8 @@ use bytes::BytesMut;
 pub use cli::Cli;
 use cmds::Command;
 use connection::Connection;
-use database::Shared;
 pub use database::{load_from_rdb, KeyValueStore};
+use database::{RadixTreeStore, Shared};
 pub use global::STATE;
 
 use parse::parse_command;
@@ -34,6 +34,7 @@ use resp::{parse_handshake_response, RespData, RespError, Tokenizer};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufWriter},
     net::{TcpListener, TcpStream},
+    stream,
     sync::Mutex,
     time::{self, Duration},
 };
@@ -116,6 +117,8 @@ impl<'a> RedisInstance for Follower {
             // initialise the DB
             //let db: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
             let kv_store: KeyValueStore<String, String> = KeyValueStore::new();
+            let stream_store: Arc<Mutex<RadixTreeStore>> =
+                Arc::new(Mutex::new(RadixTreeStore::new()));
 
             let kv_store_follower = kv_store.clone();
             let kv_store_client = kv_store.clone();
@@ -151,10 +154,12 @@ impl<'a> RedisInstance for Follower {
 
                 // Handle clients
                 let kv_store_client = kv_store_client.clone();
+                let stream_store_client = stream_store.clone();
                 let state = Arc::clone(&state);
+
                 tokio::spawn(async move {
                     let mut conn = Connection::new(state, tcp_stream, socket_addr);
-                    let _ = conn.handle(kv_store_client).await;
+                    let _ = conn.handle(kv_store_client, stream_store_client).await;
                 });
             }
         })
@@ -196,6 +201,8 @@ impl RedisInstance for Leader {
             // initialise the DB
             //let db: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
             let kv_store: KeyValueStore<String, String> = KeyValueStore::new();
+            let stream_store: Arc<Mutex<RadixTreeStore>> =
+                Arc::new(Mutex::new(RadixTreeStore::new()));
             let state = Arc::new(Mutex::new(Shared::new()));
 
             if self.dir_name.is_some() && self.dbfilename.is_some() {
@@ -240,10 +247,11 @@ impl RedisInstance for Leader {
 
                 // Handle Clients
                 let kv_store_client = kv_store.clone();
+                let stream_store_client = stream_store.clone();
                 let state_client_handles = Arc::clone(&state);
                 tokio::spawn(async move {
                     let mut conn = Connection::new(state_client_handles, tcp_stream, socket_addr);
-                    let _ = conn.handle(kv_store_client).await;
+                    let _ = conn.handle(kv_store_client, stream_store_client).await;
                 });
             }
         })

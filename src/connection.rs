@@ -1,6 +1,6 @@
 use crate::{
     cmds::{Command, CommandError, InfoSubCommand, SubCommand},
-    database::{self, KeyValueStore, Peer, Shared},
+    database::{self, KeyValueStore, Peer, RadixTreeStore, Shared},
     parse::parse_command,
     resp::{RespError, Tokenizer},
     Request,
@@ -58,6 +58,7 @@ impl Connection {
     pub async fn handle(
         &mut self,
         kv_store: KeyValueStore<String, String>,
+        stream_store: Arc<Mutex<RadixTreeStore>>,
     ) -> anyhow::Result<(), RespError> {
         let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
@@ -85,7 +86,7 @@ impl Connection {
                             }
                         }
                         let str_from_network = self.buffer[..num_bytes_read].to_vec();
-                        let responses = process_socket_read(&str_from_network, self.state.clone(), &kv_store, self.socket_addr, tx.clone(), &mut identify_replica).await?;
+                        let responses = process_socket_read(&str_from_network, self.state.clone(), &kv_store, stream_store.clone(), self.socket_addr, tx.clone(), &mut identify_replica).await?;
                         self.write(responses).await;
                         self.buffer.clear();
                     }
@@ -111,6 +112,7 @@ async fn process_socket_read(
     str_from_network: &Vec<u8>,
     state: Arc<Mutex<Shared>>,
     kv_store: &KeyValueStore<String, String>,
+    stream_store: Arc<Mutex<RadixTreeStore>>,
     socket_addr: SocketAddr,
     tx: UnboundedSender<Vec<u8>>,
     identify_replica: &mut Vec<(SocketAddr, String)>,
@@ -379,13 +381,19 @@ async fn process_socket_read(
                         }
                         Command::Type(o) => {
                             let key = o.key;
+                            dbg!(&key);
                             let mut kv_store = kv_store.clone();
+                            let stream_store = stream_store.lock().await;
                             if let Some(_value) = kv_store.get(&key).await {
                                 responses.push(format!("+string{}", CRLF,).as_bytes().to_vec());
+                            } else if let Some(val) = stream_store.check_key(&key) {
+                                responses.push(format!("+stream{}", CRLF,).as_bytes().to_vec());
                             } else {
                                 responses.push(format!("+none{}", CRLF).as_bytes().to_vec());
                             }
+                            drop(stream_store);
                         }
+
                         Command::Wait(o) => {
                             let args = o.args;
                             let mut args_iter = args.iter();
@@ -419,6 +427,18 @@ async fn process_socket_read(
                             };
                             dbg!(n);
                             let res = format!(":{}{}", n, CRLF);
+                            responses.push(res.as_bytes().to_vec());
+                        }
+                        Command::Xadd(o) => {
+                            let key = o.key;
+                            let entry_id = o.entry_id;
+                            let args = o.args;
+                            let mut stream_store = stream_store.lock().await;
+                            let entry_id =
+                                stream_store.insert(key.as_str(), entry_id.as_str(), args);
+                            // dbg!(&stream_store);
+                            drop(stream_store);
+                            let res = format!("${}{}{}{}", entry_id.len(), CRLF, entry_id, CRLF);
                             responses.push(res.as_bytes().to_vec());
                         }
                     },

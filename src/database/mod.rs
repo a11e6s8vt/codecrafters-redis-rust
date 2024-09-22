@@ -5,7 +5,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-pub use kv::KeyValueStore;
+pub use kv::{KeyValueStore, RadixTreeStore};
 pub use rdb::{load_from_rdb, write_to_disk};
 use tokio::sync::mpsc;
 

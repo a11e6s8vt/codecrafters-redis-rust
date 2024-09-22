@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::{Debug, Display};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{Mutex, MutexGuard};
+use tokio::sync::Mutex;
 
 pub struct KeyValueStoreIterator<K, V> {
     iter: std::collections::hash_map::IntoIter<K, (V, Option<(Instant, Duration)>)>,
@@ -130,11 +130,101 @@ where
     }
 }
 
-pub async fn prune_database(db: Arc<Mutex<KeyValueStore<String, String>>>) {
-    loop {
-        let mut guard = db.lock().await;
-        guard.prune().await;
-        drop(guard);
-        std::thread::sleep(Duration::from_millis(50));
+#[derive(Debug, Default)]
+pub struct StreamEntry {
+    pub key: String,
+    pub entry_id: String,
+    pub data: Vec<(String, String)>,
+}
+
+#[derive(Debug, Default)]
+pub struct RadixNode {
+    entry: Option<StreamEntry>,
+    children: BTreeMap<char, Self>,
+    is_key: bool,
+    is_entry_id: bool,
+}
+
+#[derive(Debug, Default)]
+pub struct RadixTreeStore {
+    root: RadixNode,
+}
+
+impl RadixTreeStore {
+    pub fn new() -> Self {
+        Self {
+            root: RadixNode::default(),
+        }
+    }
+
+    pub fn insert(&mut self, key: &str, entry_id: &str, data: Vec<(String, String)>) -> String {
+        let entry: StreamEntry = StreamEntry {
+            key: key.to_owned(),
+            entry_id: entry_id.to_owned(),
+            data: data.clone(),
+        };
+        let mut current_node = &mut self.root;
+        for ch in key.chars() {
+            current_node = current_node
+                .children
+                .entry(ch)
+                .or_insert(RadixNode::default());
+        }
+        current_node.is_key = true;
+
+        for ch in entry_id.chars() {
+            current_node = current_node
+                .children
+                .entry(ch)
+                .or_insert(RadixNode::default());
+        }
+        current_node.entry = Some(entry);
+        current_node.is_entry_id = true;
+
+        entry_id.to_string()
+    }
+
+    pub fn get(&self, key: &str, entry_id: &str) -> Option<&StreamEntry> {
+        let mut current_node = &self.root;
+
+        let mut key_iter = key.chars();
+        while let Some(ch) = key_iter.next() {
+            if let Some(node) = current_node.children.get(&ch) {
+                current_node = node;
+            } else {
+                return None;
+            }
+        }
+
+        let mut entry_id_iter = entry_id.chars();
+        while let Some(ch) = entry_id_iter.next() {
+            if let Some(node) = current_node.children.get(&ch) {
+                current_node = node;
+            } else {
+                return None;
+            }
+        }
+
+        return current_node.entry.as_ref();
+    }
+
+    pub fn check_key(&self, key: &str) -> Option<String> {
+        let mut current_node = &self.root;
+        let mut key_matched = String::new();
+
+        let mut key_iter = key.chars();
+        while let Some(ch) = key_iter.next() {
+            dbg!(&ch);
+            if let Some(node) = current_node.children.get(&ch) {
+                key_matched.push(ch);
+                current_node = node;
+                if current_node.is_key == true {
+                    break;
+                }
+            } else {
+                return None;
+            }
+        }
+        Some(key_matched)
     }
 }

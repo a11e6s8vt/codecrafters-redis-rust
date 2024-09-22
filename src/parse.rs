@@ -3,7 +3,7 @@ use std::time::Duration;
 use crate::{
     cmds::{
         Command, CommandError, Config, Echo, Get, Info, InfoSubCommand, Keys, Ping, Psync,
-        Replconf, Save, Set, SubCommand, Type, Wait,
+        Replconf, Save, Set, SubCommand, Type, Wait, Xadd,
     },
     resp::RespData,
 };
@@ -263,6 +263,32 @@ pub fn parse_command(v: Vec<RespData>) -> anyhow::Result<Command, CommandError> 
                     return Err(CommandError::WrongNumberOfArguments("psync".into()));
                 }
                 return Ok(Command::Wait(Wait { args }));
+            }
+            "xadd" => {
+                let mut args: Vec<(String, String)> = Vec::new();
+                let key = if let Some(RespData::String(s)) = v_iter.next() {
+                    s.to_string()
+                } else {
+                    return Err(CommandError::NotValidType("XADD".into()));
+                };
+
+                let entry_id = if let Some(RespData::String(s)) = v_iter.next() {
+                    s.to_string()
+                } else {
+                    return Err(CommandError::NotValidType("XADD".into()));
+                };
+
+                while let (Some(RespData::String(first)), Some(RespData::String(second))) =
+                    (v_iter.next(), v_iter.next())
+                {
+                    args.push((first.to_owned(), second.to_owned()));
+                }
+
+                return Ok(Command::Xadd(Xadd {
+                    key,
+                    entry_id,
+                    args,
+                }));
             }
             _ => {}
         }

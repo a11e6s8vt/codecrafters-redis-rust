@@ -1,4 +1,4 @@
-pub use command::{Echo, Get, Keys, Ping, Psync, Replconf, Save, Set, Type, Wait};
+pub use command::{Echo, Get, Keys, Ping, Psync, Replconf, Save, Set, Type, Wait, Xadd};
 pub use config::{Config, SubCommand};
 pub use info::{Info, InfoSubCommand};
 
@@ -20,6 +20,7 @@ pub enum Command {
     Psync(Psync),
     Type(Type),
     Wait(Wait),
+    Xadd(Xadd),
 }
 
 #[derive(Debug, Clone, PartialEq)]

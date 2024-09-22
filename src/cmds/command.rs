@@ -49,3 +49,10 @@ pub struct Wait {
 pub struct Type {
     pub key: String,
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Xadd {
+    pub key: String,
+    pub entry_id: String,
+    pub args: Vec<(String, String)>,
+}
