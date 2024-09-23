@@ -1,7 +1,9 @@
+use anyhow::{Context, Result};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::{Debug, Display};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use thiserror::Error;
 use tokio::sync::Mutex;
 
 pub struct KeyValueStoreIterator<K, V> {
@@ -137,6 +139,12 @@ pub struct StreamEntry {
     pub data: Vec<(String, String)>,
 }
 
+#[derive(Debug, Error)]
+pub enum StreamError {
+    #[error("Cannot proess the entry id or it is less than or equal to the last one")]
+    NotValid,
+}
+
 #[derive(Debug, Default)]
 pub struct RadixNode {
     entry: Option<StreamEntry>,
@@ -148,21 +156,43 @@ pub struct RadixNode {
 #[derive(Debug, Default)]
 pub struct RadixTreeStore {
     root: RadixNode,
+    last_entry_id: u64,
 }
 
 impl RadixTreeStore {
     pub fn new() -> Self {
         Self {
             root: RadixNode::default(),
+            last_entry_id: 0,
         }
     }
 
-    pub fn insert(&mut self, key: &str, entry_id: &str, data: Vec<(String, String)>) -> String {
+    pub fn insert(
+        &mut self,
+        key: &str,
+        entry_id: &str,
+        data: Vec<(String, String)>,
+    ) -> Result<String> {
+        let current_entry_id =
+            if let Ok(current_entry_id) = entry_id.replace("-", "").parse::<u64>() {
+                if current_entry_id == 0 {
+                    return Err(StreamError::NotValid)
+                        .context("ERR The ID specified in XADD must be greater than 0-0");
+                } else if current_entry_id <= self.last_entry_id {
+                    return Err(StreamError::NotValid)
+                        .context("The passed entry id is less than or equal to the last one");
+                }
+                current_entry_id
+            } else {
+                return Err(StreamError::NotValid)
+                    .context("The passed entry id is less than or equal to the last one");
+            };
         let entry: StreamEntry = StreamEntry {
             key: key.to_owned(),
             entry_id: entry_id.to_owned(),
             data: data.clone(),
         };
+
         let mut current_node = &mut self.root;
         for ch in key.chars() {
             current_node = current_node
@@ -180,8 +210,8 @@ impl RadixTreeStore {
         }
         current_node.entry = Some(entry);
         current_node.is_entry_id = true;
-
-        entry_id.to_string()
+        self.last_entry_id = current_entry_id;
+        Ok(entry_id.to_string())
     }
 
     pub fn get(&self, key: &str, entry_id: &str) -> Option<&StreamEntry> {

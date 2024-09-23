@@ -6,7 +6,7 @@ use crate::{
     Request,
 };
 use bytes::{BufMut, BytesMut};
-use core::net::SocketAddr;
+use core::{error, net::SocketAddr};
 use std::collections::VecDeque;
 use std::sync::{atomic::AtomicUsize, Arc};
 use tokio::{
@@ -430,15 +430,31 @@ async fn process_socket_read(
                             responses.push(res.as_bytes().to_vec());
                         }
                         Command::Xadd(o) => {
+                            let mut res = String::new();
                             let key = o.key;
                             let entry_id = o.entry_id;
                             let args = o.args;
                             let mut stream_store = stream_store.lock().await;
-                            let entry_id =
-                                stream_store.insert(key.as_str(), entry_id.as_str(), args);
+                            match stream_store.insert(key.as_str(), entry_id.as_str(), args) {
+                                Ok(entry_id) => {
+                                    res.push_str(&format!(
+                                        "${}{}{}{}",
+                                        entry_id.len(),
+                                        CRLF,
+                                        entry_id,
+                                        CRLF
+                                    ));
+                                }
+                                Err(e) => {
+                                    // dbg!(&e);
+                                    // for cause in e.chain() {
+                                    //     eprintln!("{}", cause);
+                                    // }
+                                    res.push_str(&format!("-ERR The ID specified in XADD is equal or smaller than the target stream top item{}", CRLF));
+                                }
+                            }
                             // dbg!(&stream_store);
                             drop(stream_store);
-                            let res = format!("${}{}{}{}", entry_id.len(), CRLF, entry_id, CRLF);
                             responses.push(res.as_bytes().to_vec());
                         }
                     },
