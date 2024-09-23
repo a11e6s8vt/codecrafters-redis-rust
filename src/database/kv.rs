@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::{Debug, Display};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tokio::sync::Mutex;
 
@@ -161,7 +161,7 @@ pub struct RadixNode {
 
 #[derive(Clone, Debug, Default, PartialEq, PartialOrd)]
 pub struct EntryID {
-    milliseconds_time: u64,
+    milliseconds_time: u128,
     sequence_number: u64,
 }
 
@@ -187,13 +187,27 @@ impl RadixTreeStore {
 
     pub fn new_entry_id(&self, entry_id_str: &str) -> Result<EntryID> {
         let new_id = match entry_id_str {
-            "*" => todo!(),
+            "*" => {
+                let start = SystemTime::now();
+
+                // Calculate the duration since the UNIX_EPOCH
+                let since_the_epoch = start
+                    .duration_since(UNIX_EPOCH)
+                    .expect("Time went backwards");
+
+                // Convert the duration to milliseconds
+                let millis = since_the_epoch.as_millis();
+                EntryID {
+                    milliseconds_time: millis,
+                    sequence_number: 0,
+                }
+            }
             _ => {
                 let new_id = if let Some((milliseconds_time, sequence_number)) =
                     entry_id_str.split_once("-")
                 {
                     let milliseconds_time = milliseconds_time
-                        .parse::<u64>()
+                        .parse::<u128>()
                         .expect("Expect a valid number");
                     let new_id = match sequence_number {
                         "*" => {
