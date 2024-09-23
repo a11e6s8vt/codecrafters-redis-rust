@@ -5,9 +5,9 @@ use crate::{
     resp::{RespError, Tokenizer},
     Request,
 };
-use bytes::{BufMut, BytesMut};
-use core::{error, net::SocketAddr};
+use bytes::BytesMut;
 use std::collections::VecDeque;
+use std::net::SocketAddr;
 use std::sync::{atomic::AtomicUsize, Arc};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -447,10 +447,12 @@ async fn process_socket_read(
                                 }
                                 Err(e) => {
                                     // dbg!(&e);
-                                    // for cause in e.chain() {
-                                    //     eprintln!("{}", cause);
+                                    // for (i, cause) in e.chain().enumerate() {
+                                    //     eprintln!("{}. {}", i, cause);
                                     // }
-                                    res.push_str(&format!("-ERR The ID specified in XADD is equal or smaller than the target stream top item{}", CRLF));
+                                    let error_msg =
+                                        format!("-{}{}", e.chain().collect::<Vec<_>>()[0], CRLF);
+                                    res.push_str(&error_msg);
                                 }
                             }
                             // dbg!(&stream_store);

@@ -141,8 +141,14 @@ pub struct StreamEntry {
 
 #[derive(Debug, Error)]
 pub enum StreamError {
+    #[error("ERR The ID specified in XADD must be greater than 0-0")]
+    ZeroError,
+
     #[error("Cannot proess the entry id or it is less than or equal to the last one")]
     NotValid,
+
+    #[error("ERR The ID specified in XADD is equal or smaller than the target stream top item")]
+    SmallerThanTop,
 }
 
 #[derive(Debug, Default)]
@@ -173,20 +179,22 @@ impl RadixTreeStore {
         entry_id: &str,
         data: Vec<(String, String)>,
     ) -> Result<String> {
-        let current_entry_id =
-            if let Ok(current_entry_id) = entry_id.replace("-", "").parse::<u64>() {
-                if current_entry_id == 0 {
-                    return Err(StreamError::NotValid)
-                        .context("ERR The ID specified in XADD must be greater than 0-0");
-                } else if current_entry_id <= self.last_entry_id {
-                    return Err(StreamError::NotValid)
-                        .context("The passed entry id is less than or equal to the last one");
-                }
-                current_entry_id
-            } else {
-                return Err(StreamError::NotValid)
-                    .context("The passed entry id is less than or equal to the last one");
-            };
+        let current_entry_id = if let Ok(current_entry_id) =
+            entry_id.replace("-", "").parse::<u64>()
+        {
+            if current_entry_id == 0 {
+                return Err(StreamError::ZeroError)
+                    .context("ERR The ID specified in XADD must be greater than 0-0");
+            } else if current_entry_id <= self.last_entry_id {
+                return Err(StreamError::SmallerThanTop)
+                        .context("ERR The ID specified in XADD is equal or smaller than the target stream top item");
+            }
+            current_entry_id
+        } else {
+            return Err(StreamError::NotValid)
+                .context("The passed entry id is less than or equal to the last one");
+        };
+
         let entry: StreamEntry = StreamEntry {
             key: key.to_owned(),
             entry_id: entry_id.to_owned(),
