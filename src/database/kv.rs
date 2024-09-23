@@ -144,7 +144,7 @@ pub enum StreamError {
     #[error("ERR The ID specified in XADD must be greater than 0-0")]
     ZeroError,
 
-    #[error("Cannot proess the entry id or it is less than or equal to the last one")]
+    #[error("ERR Cannot proess the entry id or it is less than or equal to the last one")]
     NotValid,
 
     #[error("ERR The ID specified in XADD is equal or smaller than the target stream top item")]
@@ -159,18 +159,88 @@ pub struct RadixNode {
     is_entry_id: bool,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, PartialOrd)]
+pub struct EntryID {
+    milliseconds_time: u64,
+    sequence_number: u64,
+}
+
+impl EntryID {
+    pub fn print(&self) -> String {
+        format!("{}-{}", self.milliseconds_time, self.sequence_number)
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct RadixTreeStore {
     root: RadixNode,
-    last_entry_id: u64,
+    last_entry_id: EntryID,
 }
 
 impl RadixTreeStore {
     pub fn new() -> Self {
         Self {
             root: RadixNode::default(),
-            last_entry_id: 0,
+            last_entry_id: EntryID::default(),
         }
+    }
+
+    pub fn new_entry_id(&self, entry_id_str: &str) -> Result<EntryID> {
+        let new_id = match entry_id_str {
+            "*" => todo!(),
+            _ => {
+                let new_id = if let Some((milliseconds_time, sequence_number)) =
+                    entry_id_str.split_once("-")
+                {
+                    let milliseconds_time = milliseconds_time
+                        .parse::<u64>()
+                        .expect("Expect a valid number");
+                    let new_id = match sequence_number {
+                        "*" => {
+                            let sequence_number =
+                                if milliseconds_time > self.last_entry_id.milliseconds_time {
+                                    0u64
+                                } else {
+                                    self.last_entry_id.sequence_number + 1
+                                };
+                            EntryID {
+                                milliseconds_time,
+                                sequence_number,
+                            }
+                        }
+                        _ => {
+                            let sequence_number =
+                                sequence_number.parse::<u64>().expect("A valid number");
+
+                            if milliseconds_time == 0 && sequence_number == 0 {
+                                return Err(StreamError::ZeroError).context(
+                                    "ERR The ID specified in XADD must be greater than 0-0",
+                                );
+                            }
+
+                            if milliseconds_time < self.last_entry_id.milliseconds_time {
+                                return Err(StreamError::SmallerThanTop).context("ERR The ID specified in XADD is equal or smaller than the target stream top item");
+                            } else if milliseconds_time == self.last_entry_id.milliseconds_time {
+                                if sequence_number <= self.last_entry_id.sequence_number {
+                                    return Err(StreamError::SmallerThanTop).context("ERR The ID specified in XADD is equal or smaller than the target stream top item");
+                                }
+                            }
+
+                            EntryID {
+                                milliseconds_time,
+                                sequence_number,
+                            }
+                        }
+                    };
+
+                    new_id
+                } else {
+                    return Err(StreamError::NotValid).context("ERR Cannot proess the entry id or it is less than or equal to the last one");
+                };
+                new_id
+            }
+        };
+        Ok(new_id)
     }
 
     pub fn insert(
@@ -179,25 +249,15 @@ impl RadixTreeStore {
         entry_id: &str,
         data: Vec<(String, String)>,
     ) -> Result<String> {
-        let current_entry_id = if let Ok(current_entry_id) =
-            entry_id.replace("-", "").parse::<u64>()
-        {
-            if current_entry_id == 0 {
-                return Err(StreamError::ZeroError)
-                    .context("ERR The ID specified in XADD must be greater than 0-0");
-            } else if current_entry_id <= self.last_entry_id {
-                return Err(StreamError::SmallerThanTop)
-                        .context("ERR The ID specified in XADD is equal or smaller than the target stream top item");
-            }
-            current_entry_id
-        } else {
-            return Err(StreamError::NotValid)
-                .context("The passed entry id is less than or equal to the last one");
+        let entry_id = self.new_entry_id(entry_id);
+        let entry_id = match entry_id {
+            Ok(entry_id) => entry_id,
+            Err(e) => return Err(e),
         };
 
         let entry: StreamEntry = StreamEntry {
             key: key.to_owned(),
-            entry_id: entry_id.to_owned(),
+            entry_id: entry_id.print(),
             data: data.clone(),
         };
 
@@ -210,7 +270,11 @@ impl RadixTreeStore {
         }
         current_node.is_key = true;
 
-        for ch in entry_id.chars() {
+        // Insert the node in the tree
+        // remove the '-' from the entry_id
+        let entry_id_chars = entry_id.print().replace("-", "");
+        let entry_id_chars = entry_id_chars.chars();
+        for ch in entry_id_chars {
             current_node = current_node
                 .children
                 .entry(ch)
@@ -218,8 +282,8 @@ impl RadixTreeStore {
         }
         current_node.entry = Some(entry);
         current_node.is_entry_id = true;
-        self.last_entry_id = current_entry_id;
-        Ok(entry_id.to_string())
+        self.last_entry_id = entry_id.clone();
+        Ok(entry_id.print())
     }
 
     pub fn get(&self, key: &str, entry_id: &str) -> Option<&StreamEntry> {
