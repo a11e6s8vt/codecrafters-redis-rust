@@ -172,7 +172,6 @@ impl RespData {
                                         Some(Err(_)) => break,
                                         None => break,
                                     };
-                                    dbg!(&word);
 
                                     if word.len() == word_len as usize {
                                         if let Ok(n) = word.parse::<i64>() {

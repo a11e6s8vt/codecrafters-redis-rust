@@ -384,6 +384,11 @@ impl RadixTreeStore {
                         results.push(entry);
                     }
                 }
+                "++" => {
+                    if prefix > start {
+                        results.push(entry);
+                    }
+                }
                 _ => {
                     if prefix >= start && prefix <= end {
                         results.push(entry);

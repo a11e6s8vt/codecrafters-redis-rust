@@ -63,3 +63,9 @@ pub struct Xrange {
     pub start: String,
     pub end: String,
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Xread {
+    pub keys: Vec<String>,
+    pub entry_ids: Vec<String>,
+}

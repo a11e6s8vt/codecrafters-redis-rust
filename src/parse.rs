@@ -3,7 +3,7 @@ use std::time::Duration;
 use crate::{
     cmds::{
         Command, CommandError, Config, Echo, Get, Info, InfoSubCommand, Keys, Ping, Psync,
-        Replconf, Save, Set, SubCommand, Type, Wait, Xadd, Xrange,
+        Replconf, Save, Set, SubCommand, Type, Wait, Xadd, Xrange, Xread,
     },
     resp::RespData,
 };
@@ -278,10 +278,27 @@ pub fn parse_command(v: Vec<RespData>) -> anyhow::Result<Command, CommandError> 
                     return Err(CommandError::NotValidType("XADD".into()));
                 };
 
-                while let (Some(RespData::String(first)), Some(RespData::String(second))) =
-                    (v_iter.next(), v_iter.next())
-                {
-                    args.push((first.to_owned(), second.to_owned()));
+                let kv_pairs = v_iter.collect::<Vec<&RespData>>();
+                if kv_pairs.len() % 2 != 0 {
+                    return Err(CommandError::WrongNumberOfArguments("xread".into()));
+                }
+
+                let kv_pairs = kv_pairs
+                    .chunks(2)
+                    .map(|chunk| {
+                        let chunk = chunk.to_vec();
+                        (chunk[0].to_owned(), chunk[1].to_owned())
+                    })
+                    .collect::<Vec<(RespData, RespData)>>();
+
+                for (k, v) in kv_pairs {
+                    match (k, v) {
+                        (RespData::String(k), RespData::String(v)) => args.push((k, v)),
+                        (RespData::String(k), RespData::Integer(v)) => {
+                            args.push((k, v.to_string()))
+                        }
+                        (_, _) => return Err(CommandError::NotValidType("XADD".into())),
+                    }
                 }
 
                 return Ok(Command::Xadd(Xadd {
@@ -314,6 +331,31 @@ pub fn parse_command(v: Vec<RespData>) -> anyhow::Result<Command, CommandError> 
                 }
 
                 return Ok(Command::Xrange(Xrange { key, start, end }));
+            }
+            "xread" => {
+                let cmd = if let Some(RespData::String(s)) = v_iter.next() {
+                    s.to_string()
+                } else {
+                    return Err(CommandError::NotValidType("XREAD".into()));
+                };
+                let mut cmd_options: Vec<String> = Vec::new();
+                match cmd.to_ascii_lowercase().as_str() {
+                    "streams" => {
+                        while let Some(RespData::String(s)) = v_iter.next() {
+                            cmd_options.push(s.to_string());
+                        }
+
+                        if cmd_options.len() % 2 != 0 {
+                            return Err(CommandError::WrongNumberOfArguments("XREAD".into()));
+                        }
+                    }
+                    _ => {}
+                }
+
+                let mid = cmd_options.len() / 2;
+                let keys: Vec<_> = cmd_options[..mid].to_vec();
+                let entry_ids: Vec<_> = cmd_options[mid..].to_vec();
+                return Ok(Command::Xread(Xread { keys, entry_ids }));
             }
             _ => {}
         }

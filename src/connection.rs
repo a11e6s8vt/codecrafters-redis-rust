@@ -119,7 +119,6 @@ async fn process_socket_read(
 ) -> anyhow::Result<Vec<Vec<u8>>, RespError> {
     let mut responses: Vec<Vec<u8>> = Vec::new();
     let s = String::from_utf8_lossy(&str_from_network).to_string();
-    dbg!(&s);
     if let Ok(resp_parsed) = RespData::parse(&s) {
         let mut resp_parsed_iter = resp_parsed.iter();
         while let Some(parsed) = resp_parsed_iter.next() {
@@ -186,11 +185,9 @@ async fn process_socket_read(
                             state.lock().await.broadcast(str_from_network).await;
                         }
                         Command::Config(o) => {
-                            dbg!(o.clone());
                             match o.sub_command {
                                 SubCommand::Get(pattern) => {
                                     if let Some(res) = STATE.get_val(&pattern) {
-                                        dbg!(res);
                                         // *2\r\n$3\r\ndir\r\n$16\r\n/tmp/redis-files\r\n
                                         responses.push(
                                             format!(
@@ -315,7 +312,6 @@ async fn process_socket_read(
                                 "ack" => {
                                     let bytes_written =
                                         args_iter.next().expect("Expect a valid entry");
-                                    dbg!(bytes_written);
                                     let bytes_written = bytes_written
                                         .parse::<usize>()
                                         .expect("expect a valid number as bytes");
@@ -372,7 +368,6 @@ async fn process_socket_read(
                                                 bytes_written: AtomicUsize::new(0),
                                                 commands_processed: VecDeque::with_capacity(5),
                                             };
-                                            dbg!("peer address: {}", socket_addr);
                                             state.lock().await.peers.insert(socket_addr, peer);
                                         }
                                     }
@@ -381,7 +376,6 @@ async fn process_socket_read(
                         }
                         Command::Type(o) => {
                             let key = o.key;
-                            dbg!(&key);
                             let mut kv_store = kv_store.clone();
                             let stream_store = stream_store.lock().await;
                             if let Some(_value) = kv_store.get(&key).await {
@@ -425,7 +419,6 @@ async fn process_socket_read(
                                 };
                                 n
                             };
-                            dbg!(n);
                             let res = format!(":{}{}", n, CRLF);
                             responses.push(res.as_bytes().to_vec());
                         }
@@ -484,6 +477,53 @@ async fn process_socket_read(
                                         v,
                                         CRLF
                                     ));
+                                }
+                            }
+                            drop(guard);
+                            responses.push(response.as_bytes().to_vec());
+                        }
+                        Command::Xread(o) => {
+                            let keys = o.keys;
+                            let entry_ids = o.entry_ids;
+                            let guard = stream_store.lock().await;
+                            let mut response = String::new();
+                            for (key, entry_id) in keys.iter().zip(entry_ids.iter()) {
+                                let items_in_range = guard.xrange(key, entry_id, "++");
+                                response.push_str(&format!(
+                                    "*1{}*2{}${}{}{}{}*{}{}",
+                                    CRLF,
+                                    CRLF,
+                                    key.len(),
+                                    CRLF,
+                                    key,
+                                    CRLF,
+                                    items_in_range.len(),
+                                    CRLF,
+                                ));
+                                for entry in items_in_range {
+                                    response.push_str(&format!(
+                                        "*2{}${}{}{}{}*{}{}",
+                                        CRLF,
+                                        entry.entry_id.len(),
+                                        CRLF,
+                                        entry.entry_id,
+                                        CRLF,
+                                        entry.data.len(),
+                                        CRLF,
+                                    ));
+                                    for (k, v) in entry.data.iter() {
+                                        response.push_str(&format!(
+                                            "${}{}{}{}${}{}{}{}",
+                                            k.len(),
+                                            CRLF,
+                                            k,
+                                            CRLF,
+                                            v.len(),
+                                            CRLF,
+                                            v,
+                                            CRLF
+                                        ));
+                                    }
                                 }
                             }
                             drop(guard);
