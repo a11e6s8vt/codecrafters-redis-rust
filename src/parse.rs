@@ -308,6 +308,7 @@ pub fn parse_command(v: Vec<RespData>) -> anyhow::Result<Command, CommandError> 
                 } else {
                     return Err(CommandError::NotValidType("XRANGE".into()));
                 };
+
                 if let Some(_) = v_iter.next() {
                     return Err(CommandError::WrongNumberOfArguments("xrange".into()));
                 }

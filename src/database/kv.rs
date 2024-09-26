@@ -372,6 +372,11 @@ impl RadixTreeStore {
         end: &str,
         results: &mut Vec<&'a StreamEntry>,
     ) {
+        let start = match start {
+            "-" => "",
+            _ => start,
+        };
+
         if let Some(entry) = &node.entry {
             if prefix >= start && prefix <= end {
                 results.push(entry);

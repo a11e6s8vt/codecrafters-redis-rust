@@ -446,27 +446,20 @@ async fn process_socket_read(
                                     ));
                                 }
                                 Err(e) => {
-                                    // dbg!(&e);
-                                    // for (i, cause) in e.chain().enumerate() {
-                                    //     eprintln!("{}. {}", i, cause);
-                                    // }
                                     let error_msg =
                                         format!("-{}{}", e.chain().collect::<Vec<_>>()[0], CRLF);
                                     res.push_str(&error_msg);
                                 }
                             }
-                            // dbg!(&stream_store);
                             drop(stream_store);
                             responses.push(res.as_bytes().to_vec());
                         }
                         Command::Xrange(o) => {
-                            dbg!(&o);
                             let key = o.key.as_str();
                             let start = o.start.as_str();
                             let end = o.end.as_str();
                             let guard = stream_store.lock().await;
                             let items_in_range = guard.xrange(key, start, end);
-                            dbg!(&items_in_range);
                             let mut response = format!("*{}{}", items_in_range.len(), CRLF);
                             for entry in items_in_range {
                                 response.push_str(&format!(
@@ -494,7 +487,6 @@ async fn process_socket_read(
                                 }
                             }
                             drop(guard);
-                            dbg!(&response);
                             responses.push(response.as_bytes().to_vec());
                         }
                     },

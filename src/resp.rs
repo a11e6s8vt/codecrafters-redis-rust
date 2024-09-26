@@ -54,10 +54,9 @@ impl<'b> Iterator for Tokenizer<'b> {
                 ':' => return Some(Ok(Token::Colon)),
                 '_' => return Some(Ok(Token::Underscore)),
                 '-' => {
-                    let c = self.it.next().expect("a valid token");
                     let t = utf8_token(&mut self.it, c);
                     if let Ok(num) = t.parse::<i64>() {
-                        return Some(Ok(Token::Num(-num)));
+                        return Some(Ok(Token::Num(num)));
                     } else {
                         return Some(Ok(Token::Word(t)));
                     }
@@ -167,10 +166,12 @@ impl RespData {
                                         Some(Ok(Token::Num(num))) => num.to_string(),
                                         Some(Ok(Token::Question)) => "?".to_string(),
                                         Some(Ok(Token::Asterisk)) => "*".to_string(),
+                                        Some(Ok(Token::Minus)) => "-".to_string(),
                                         Some(Ok(_)) => break,
                                         Some(Err(_)) => break,
                                         None => break,
                                     };
+                                    dbg!(&word);
 
                                     if word.len() == word_len as usize {
                                         if let Ok(n) = word.parse::<i64>() {
