@@ -167,6 +167,7 @@ impl RespData {
                                         Some(Ok(Token::Question)) => "?".to_string(),
                                         Some(Ok(Token::Asterisk)) => "*".to_string(),
                                         Some(Ok(Token::Minus)) => "-".to_string(),
+                                        Some(Ok(Token::Plus)) => "+".to_string(),
                                         Some(Ok(_)) => break,
                                         Some(Err(_)) => break,
                                         None => break,

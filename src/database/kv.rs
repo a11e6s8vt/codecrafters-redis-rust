@@ -378,9 +378,18 @@ impl RadixTreeStore {
         };
 
         if let Some(entry) = &node.entry {
-            if prefix >= start && prefix <= end {
-                results.push(entry);
-            }
+            match end {
+                "+" => {
+                    if prefix >= start {
+                        results.push(entry);
+                    }
+                }
+                _ => {
+                    if prefix >= start && prefix <= end {
+                        results.push(entry);
+                    }
+                }
+            };
         }
 
         for (ch, child) in &node.children {
