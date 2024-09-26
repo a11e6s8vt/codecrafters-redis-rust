@@ -6,9 +6,9 @@ use crate::{
     Request,
 };
 use bytes::BytesMut;
-use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::{atomic::AtomicUsize, Arc};
+use std::{collections::VecDeque, fmt::format};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -486,12 +486,11 @@ async fn process_socket_read(
                             let keys = o.keys;
                             let entry_ids = o.entry_ids;
                             let guard = stream_store.lock().await;
-                            let mut response = String::new();
+                            let mut response = format!("*{}{}", keys.len(), CRLF);
                             for (key, entry_id) in keys.iter().zip(entry_ids.iter()) {
                                 let items_in_range = guard.xrange(key, entry_id, "++");
                                 response.push_str(&format!(
-                                    "*1{}*2{}${}{}{}{}*{}{}",
-                                    CRLF,
+                                    "*2{}${}{}{}{}*{}{}",
                                     CRLF,
                                     key.len(),
                                     CRLF,
