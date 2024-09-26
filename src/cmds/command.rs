@@ -56,3 +56,10 @@ pub struct Xadd {
     pub entry_id: String,
     pub args: Vec<(String, String)>,
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Xrange {
+    pub key: String,
+    pub start: String,
+    pub end: String,
+}

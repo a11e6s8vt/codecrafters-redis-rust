@@ -459,6 +459,44 @@ async fn process_socket_read(
                             drop(stream_store);
                             responses.push(res.as_bytes().to_vec());
                         }
+                        Command::Xrange(o) => {
+                            dbg!(&o);
+                            let key = o.key.as_str();
+                            let start = o.start.as_str();
+                            let end = o.end.as_str();
+                            let guard = stream_store.lock().await;
+                            let items_in_range = guard.xrange(key, start, end);
+                            dbg!(&items_in_range);
+                            let mut response = format!("*{}{}", items_in_range.len(), CRLF);
+                            for entry in items_in_range {
+                                response.push_str(&format!(
+                                    "*2{}${}{}{}{}*{}{}",
+                                    CRLF,
+                                    entry.entry_id.len(),
+                                    CRLF,
+                                    entry.entry_id,
+                                    CRLF,
+                                    entry.data.len(),
+                                    CRLF,
+                                ));
+                                for (k, v) in entry.data.iter() {
+                                    response.push_str(&format!(
+                                        "${}{}{}{}${}{}{}{}",
+                                        k.len(),
+                                        CRLF,
+                                        k,
+                                        CRLF,
+                                        v.len(),
+                                        CRLF,
+                                        v,
+                                        CRLF
+                                    ));
+                                }
+                            }
+                            drop(guard);
+                            dbg!(&response);
+                            responses.push(response.as_bytes().to_vec());
+                        }
                     },
                     Err(e) => match e.clone() {
                         CommandError::SyntaxError(_n) => {

@@ -286,7 +286,8 @@ impl RadixTreeStore {
 
         // Insert the node in the tree
         // remove the '-' from the entry_id
-        let entry_id_chars = entry_id.print().replace("-", "");
+        // let entry_id_chars = entry_id.print().replace("-", "");
+        let entry_id_chars = entry_id.print();
         let entry_id_chars = entry_id_chars.chars();
         for ch in entry_id_chars {
             current_node = current_node
@@ -330,7 +331,6 @@ impl RadixTreeStore {
 
         let mut key_iter = key.chars();
         while let Some(ch) = key_iter.next() {
-            dbg!(&ch);
             if let Some(node) = current_node.children.get(&ch) {
                 key_matched.push(ch);
                 current_node = node;
@@ -342,5 +342,45 @@ impl RadixTreeStore {
             }
         }
         Some(key_matched)
+    }
+
+    pub fn xrange(&self, key: &str, start: &str, end: &str) -> Vec<&StreamEntry> {
+        let mut results = Vec::new();
+        let mut current_node = &self.root;
+        let mut key_matched = String::new();
+
+        let mut key_iter = key.chars();
+        while let Some(ch) = key_iter.next() {
+            if let Some(node) = current_node.children.get(&ch) {
+                key_matched.push(ch);
+                current_node = node;
+                if current_node.is_key == true {
+                    break;
+                }
+            }
+        }
+
+        self.get_range(&current_node, "", start, end, &mut results);
+        results
+    }
+
+    fn get_range<'a>(
+        &'a self,
+        node: &'a RadixNode,
+        prefix: &str,
+        start: &str,
+        end: &str,
+        results: &mut Vec<&'a StreamEntry>,
+    ) {
+        if let Some(entry) = &node.entry {
+            if prefix >= start && prefix <= end {
+                results.push(entry);
+            }
+        }
+
+        for (ch, child) in &node.children {
+            let new_prefix = format!("{}{}", prefix, ch);
+            self.get_range(child, &new_prefix, start, end, results);
+        }
     }
 }

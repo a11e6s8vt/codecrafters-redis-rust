@@ -3,7 +3,7 @@ use std::time::Duration;
 use crate::{
     cmds::{
         Command, CommandError, Config, Echo, Get, Info, InfoSubCommand, Keys, Ping, Psync,
-        Replconf, Save, Set, SubCommand, Type, Wait, Xadd,
+        Replconf, Save, Set, SubCommand, Type, Wait, Xadd, Xrange,
     },
     resp::RespData,
 };
@@ -289,6 +289,30 @@ pub fn parse_command(v: Vec<RespData>) -> anyhow::Result<Command, CommandError> 
                     entry_id,
                     args,
                 }));
+            }
+            "xrange" => {
+                let key = if let Some(RespData::String(s)) = v_iter.next() {
+                    s.to_string()
+                } else {
+                    return Err(CommandError::NotValidType("XRANGE".into()));
+                };
+
+                let start = if let Some(RespData::String(s)) = v_iter.next() {
+                    s.to_string()
+                } else {
+                    return Err(CommandError::NotValidType("XRANGE".into()));
+                };
+
+                let end = if let Some(RespData::String(s)) = v_iter.next() {
+                    s.to_string()
+                } else {
+                    return Err(CommandError::NotValidType("XRANGE".into()));
+                };
+                if let Some(_) = v_iter.next() {
+                    return Err(CommandError::WrongNumberOfArguments("xrange".into()));
+                }
+
+                return Ok(Command::Xrange(Xrange { key, start, end }));
             }
             _ => {}
         }
