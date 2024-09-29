@@ -328,16 +328,21 @@ impl RadixTreeStore {
     pub async fn check_availability(&self, timeout: u64, entry_id: &str) -> Option<String> {
         let mut rx = self.rx.lock().await;
         let mut count = 2;
-        let timeout = tokio::time::Duration::from_millis(timeout);
-        let timeout_future = tokio::time::sleep(timeout);
-        // tokio::pin!(timeout_future);
-        let mut interval = tokio::time::interval(timeout);
+        let timeout_duration = if timeout == 0 {
+            tokio::time::Duration::from_millis(10000)
+        } else {
+            tokio::time::Duration::from_millis(timeout)
+        };
+        let mut interval = tokio::time::interval(timeout_duration);
         loop {
-            dbg!("check_availability");
             tokio::select! {
                 _ = interval.tick() => {
                     println!("branch 1 - tick : {count}");
-                    count -= 1;
+                    if timeout > 0 {
+                        count -= 1;
+                    } else {
+                        count += 1;
+                    }
                     if count == 0 {
                         return None;
                     }
