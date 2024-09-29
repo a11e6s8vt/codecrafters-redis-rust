@@ -5,12 +5,15 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-pub use kv::{KeyValueStore, RadixTreeStore};
+pub use kv::KeyValueStore;
 pub use rdb::{load_from_rdb, write_to_disk};
+pub use stream::{RadixTreeStore, StreamEntry};
 use tokio::sync::mpsc;
 
 mod kv;
 mod rdb;
+mod stream;
+
 type Tx = mpsc::UnboundedSender<Vec<u8>>;
 type Rx = mpsc::UnboundedReceiver<Vec<u8>>;
 
@@ -50,8 +53,7 @@ impl Shared {
         for peer in self.peers.iter_mut() {
             let p = peer.1;
             if *peer.0 == sender {
-                let _ = p
-                    .bytes_written
+                p.bytes_written
                     .store(bytes_written, std::sync::atomic::Ordering::Relaxed);
             }
         }
@@ -63,7 +65,6 @@ impl Shared {
             let p = peer.1;
             let bytes_sent = p.bytes_sent.load(Ordering::Relaxed) - offset_len;
             let bytes_written = p.bytes_written.load(Ordering::Relaxed);
-            dbg!(peer.0, bytes_sent, bytes_written);
             if bytes_sent == bytes_written {
                 count += 1;
             }
@@ -75,7 +76,7 @@ impl Shared {
         let mut count: usize = 0;
         for peer in self.peers.iter() {
             let p = peer.1;
-            if p.commands_processed.len() != 0 {
+            if !p.commands_processed.is_empty() {
                 count += 1;
             }
         }

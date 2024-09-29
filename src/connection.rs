@@ -1,14 +1,13 @@
 use crate::{
     cmds::{Command, CommandError, InfoSubCommand, SubCommand},
-    database::{self, KeyValueStore, Peer, RadixTreeStore, Shared},
+    database::{self, KeyValueStore, Peer, RadixTreeStore, Shared, StreamEntry},
     parse::parse_command,
-    resp::{RespError, Tokenizer},
-    Request,
+    resp::RespError,
 };
 use bytes::BytesMut;
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::{atomic::AtomicUsize, Arc};
-use std::{collections::VecDeque, fmt::format};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -58,7 +57,7 @@ impl Connection {
     pub async fn handle(
         &mut self,
         kv_store: KeyValueStore<String, String>,
-        stream_store: Arc<Mutex<RadixTreeStore>>,
+        stream_store: RadixTreeStore,
     ) -> anyhow::Result<(), RespError> {
         let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
@@ -86,7 +85,7 @@ impl Connection {
                             }
                         }
                         let str_from_network = self.buffer[..num_bytes_read].to_vec();
-                        let responses = process_socket_read(&str_from_network, self.state.clone(), &kv_store, stream_store.clone(), self.socket_addr, tx.clone(), &mut identify_replica).await?;
+                        let responses = process_socket_read(&str_from_network, self.state.clone(), &kv_store, &stream_store, self.socket_addr, tx.clone(), &mut identify_replica).await?;
                         self.write(responses).await;
                         self.buffer.clear();
                     }
@@ -99,10 +98,9 @@ impl Connection {
         for content in message {
             if let Err(e) = self.stream.write_all(&content).await {
                 log::error!("Writing to TCP stream failed! {}", e);
-            } else {
-                if let Err(e) = self.stream.flush().await {
-                    log::error!("Writing to TCP stream failed! {}", e);
-                }
+            }
+            if let Err(e) = self.stream.flush().await {
+                log::error!("Writing to TCP stream failed! {}", e);
             }
         }
     }
@@ -112,13 +110,13 @@ async fn process_socket_read(
     str_from_network: &Vec<u8>,
     state: Arc<Mutex<Shared>>,
     kv_store: &KeyValueStore<String, String>,
-    stream_store: Arc<Mutex<RadixTreeStore>>,
+    stream_store: &RadixTreeStore,
     socket_addr: SocketAddr,
     tx: UnboundedSender<Vec<u8>>,
     identify_replica: &mut Vec<(SocketAddr, String)>,
 ) -> anyhow::Result<Vec<Vec<u8>>, RespError> {
     let mut responses: Vec<Vec<u8>> = Vec::new();
-    let s = String::from_utf8_lossy(&str_from_network).to_string();
+    let s = String::from_utf8_lossy(str_from_network).to_string();
     if let Ok(resp_parsed) = RespData::parse(&s) {
         let mut resp_parsed_iter = resp_parsed.iter();
         while let Some(parsed) = resp_parsed_iter.next() {
@@ -377,15 +375,13 @@ async fn process_socket_read(
                         Command::Type(o) => {
                             let key = o.key;
                             let mut kv_store = kv_store.clone();
-                            let stream_store = stream_store.lock().await;
                             if let Some(_value) = kv_store.get(&key).await {
                                 responses.push(format!("+string{}", CRLF,).as_bytes().to_vec());
-                            } else if let Some(val) = stream_store.check_key(&key) {
+                            } else if stream_store.check_key(&key).await.is_some() {
                                 responses.push(format!("+stream{}", CRLF,).as_bytes().to_vec());
                             } else {
                                 responses.push(format!("+none{}", CRLF).as_bytes().to_vec());
                             }
-                            drop(stream_store);
                         }
 
                         Command::Wait(o) => {
@@ -427,8 +423,11 @@ async fn process_socket_read(
                             let key = o.key;
                             let entry_id = o.entry_id;
                             let args = o.args;
-                            let mut stream_store = stream_store.lock().await;
-                            match stream_store.insert(key.as_str(), entry_id.as_str(), args) {
+                            let mut stream_store = stream_store.clone();
+                            match stream_store
+                                .insert(key.as_str(), entry_id.as_str(), args)
+                                .await
+                            {
                                 Ok(entry_id) => {
                                     res.push_str(&format!(
                                         "${}{}{}{}",
@@ -451,82 +450,110 @@ async fn process_socket_read(
                             let key = o.key.as_str();
                             let start = o.start.as_str();
                             let end = o.end.as_str();
-                            let guard = stream_store.lock().await;
-                            let items_in_range = guard.xrange(key, start, end);
-                            let mut response = format!("*{}{}", items_in_range.len(), CRLF);
-                            for entry in items_in_range {
-                                response.push_str(&format!(
-                                    "*2{}${}{}{}{}*{}{}",
-                                    CRLF,
-                                    entry.entry_id.len(),
-                                    CRLF,
-                                    entry.entry_id,
-                                    CRLF,
-                                    entry.data.len(),
-                                    CRLF,
-                                ));
-                                for (k, v) in entry.data.iter() {
-                                    response.push_str(&format!(
-                                        "${}{}{}{}${}{}{}{}",
-                                        k.len(),
-                                        CRLF,
-                                        k,
-                                        CRLF,
-                                        v.len(),
-                                        CRLF,
-                                        v,
-                                        CRLF
-                                    ));
-                                }
+                            if let Ok(items_in_range) = stream_store.xrange(key, start, end).await {
+                                responses
+                                    .extend(format_xrange_output(&items_in_range, "".to_string()));
+                            } else {
+                                responses.push("$-1\r\n".to_string().as_bytes().to_vec());
                             }
-                            drop(guard);
-                            responses.push(response.as_bytes().to_vec());
                         }
                         Command::Xread(o) => {
-                            let keys = o.keys;
-                            let entry_ids = o.entry_ids;
-                            let guard = stream_store.lock().await;
-                            let mut response = format!("*{}{}", keys.len(), CRLF);
-                            for (key, entry_id) in keys.iter().zip(entry_ids.iter()) {
-                                let items_in_range = guard.xrange(key, entry_id, "++");
-                                response.push_str(&format!(
-                                    "*2{}${}{}{}{}*{}{}",
-                                    CRLF,
-                                    key.len(),
-                                    CRLF,
-                                    key,
-                                    CRLF,
-                                    items_in_range.len(),
-                                    CRLF,
-                                ));
-                                for entry in items_in_range {
-                                    response.push_str(&format!(
-                                        "*2{}${}{}{}{}*{}{}",
-                                        CRLF,
-                                        entry.entry_id.len(),
-                                        CRLF,
-                                        entry.entry_id,
-                                        CRLF,
-                                        entry.data.len(),
-                                        CRLF,
-                                    ));
-                                    for (k, v) in entry.data.iter() {
-                                        response.push_str(&format!(
-                                            "${}{}{}{}${}{}{}{}",
-                                            k.len(),
+                            let block = o.block;
+                            let keys = o.keys.clone();
+                            let entry_ids = o.entry_ids.clone();
+
+                            match block {
+                                Some(timeout) => {
+                                    let resp_init_str = format!("*{}{}", keys.len(), CRLF);
+                                    responses.push(resp_init_str.as_bytes().to_vec());
+                                    for (key, entry_id) in keys.iter().zip(entry_ids.iter()) {
+                                        if let Ok(items_in_range) =
+                                            stream_store.xrange(key, entry_id, "++").await
+                                        {
+                                            let response_init_str = format!(
+                                                "*2{}${}{}{}{}",
+                                                CRLF,
+                                                key.len(),
+                                                CRLF,
+                                                key,
+                                                CRLF
+                                            );
+
+                                            responses.push(response_init_str.as_bytes().to_vec());
+                                            let t = format_xrange_output(
+                                                &items_in_range,
+                                                "".to_string(),
+                                            );
+                                            responses.extend(t);
+                                        } else {
+                                            match stream_store
+                                                .check_availability(timeout, entry_id.as_str())
+                                                .await
+                                            {
+                                                Some(_s) => {
+                                                    if let Ok(items_in_range) = stream_store
+                                                        .xrange(key, entry_id, "++")
+                                                        .await
+                                                    {
+                                                        let response_init_str = format!(
+                                                            "*2{}${}{}{}{}",
+                                                            CRLF,
+                                                            key.len(),
+                                                            CRLF,
+                                                            key,
+                                                            CRLF
+                                                        );
+
+                                                        dbg!(&response_init_str);
+
+                                                        responses.push(
+                                                            response_init_str.as_bytes().to_vec(),
+                                                        );
+                                                        let t = format_xrange_output(
+                                                            &items_in_range,
+                                                            "".to_string(),
+                                                        );
+                                                        responses.extend(t);
+                                                    }
+                                                }
+                                                None => {
+                                                    dbg!("None");
+                                                    responses.clear();
+                                                    responses.push(
+                                                        format!("$-1\r\n").as_bytes().to_vec(),
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                None => {
+                                    let response_init_str = format!("*{}{}", keys.len(), CRLF);
+                                    responses.push(response_init_str.as_bytes().to_vec());
+                                    for (key, entry_id) in keys.iter().zip(entry_ids.iter()) {
+                                        let response_init_str = format!(
+                                            "*2{}${}{}{}{}",
                                             CRLF,
-                                            k,
+                                            key.len(),
                                             CRLF,
-                                            v.len(),
-                                            CRLF,
-                                            v,
+                                            key,
                                             CRLF
-                                        ));
+                                        );
+                                        responses.push(response_init_str.as_bytes().to_vec());
+                                        if let Ok(items_in_range) =
+                                            stream_store.xrange(key, entry_id, "++").await
+                                        {
+                                            responses.extend(format_xrange_output(
+                                                &items_in_range,
+                                                "".to_string(),
+                                            ))
+                                        } else {
+                                            responses.clear();
+                                            responses.push(format!("$-1\r\n").as_bytes().to_vec())
+                                        }
                                     }
                                 }
                             }
-                            drop(guard);
-                            responses.push(response.as_bytes().to_vec());
                         }
                     },
                     Err(e) => match e.clone() {
@@ -566,4 +593,48 @@ async fn process_socket_read(
 async fn follower_replication_acks(state: Arc<Mutex<Shared>>) {
     let get_ack_cmd = b"*3\r\n$8\r\nreplconf\r\n$6\r\ngetack\r\n$1\r\n*\r\n";
     state.lock().await.broadcast(get_ack_cmd.to_vec()).await;
+}
+
+fn format_xrange_output(items_in_range: &Vec<StreamEntry>, resp_init_str: String) -> Vec<Vec<u8>> {
+    let mut responses: Vec<Vec<u8>> = Vec::new();
+    if !items_in_range.is_empty() {
+        let mut response = if resp_init_str.is_empty() {
+            format!("*{}{}", items_in_range.len(), CRLF)
+        } else {
+            format!("{}*{}{}", resp_init_str, items_in_range.len(), CRLF)
+        };
+
+        for entry in items_in_range {
+            let data_len = entry.data.len() * 2;
+            response.push_str(&format!(
+                "*2{}${}{}{}{}*{}{}",
+                CRLF,
+                &entry.entry_id.len(),
+                CRLF,
+                &entry.entry_id,
+                CRLF,
+                &data_len,
+                CRLF,
+            ));
+            for (k, v) in entry.data.iter() {
+                response.push_str(&format!(
+                    "${}{}{}{}${}{}{}{}",
+                    k.len(),
+                    CRLF,
+                    k,
+                    CRLF,
+                    v.len(),
+                    CRLF,
+                    v,
+                    CRLF
+                ));
+            }
+        }
+        dbg!(&response);
+        responses.push(response.as_bytes().to_vec());
+    } else {
+        responses.push("$-1\r\n".to_string().as_bytes().to_vec());
+    }
+
+    responses
 }

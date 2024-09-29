@@ -333,29 +333,55 @@ pub fn parse_command(v: Vec<RespData>) -> anyhow::Result<Command, CommandError> 
                 return Ok(Command::Xrange(Xrange { key, start, end }));
             }
             "xread" => {
-                let cmd = if let Some(RespData::String(s)) = v_iter.next() {
-                    s.to_string()
-                } else {
-                    return Err(CommandError::NotValidType("XREAD".into()));
-                };
+                let mut block: Option<u64> = None;
                 let mut cmd_options: Vec<String> = Vec::new();
-                match cmd.to_ascii_lowercase().as_str() {
-                    "streams" => {
-                        while let Some(RespData::String(s)) = v_iter.next() {
-                            cmd_options.push(s.to_string());
+                loop {
+                    let cmd = match v_iter.next() {
+                        Some(RespData::String(s)) => s.to_string(),
+                        Some(_) => return Err(CommandError::NotValidType("XREAD".into())),
+                        None => return Err(CommandError::NotValidType("XREAD".into())),
+                    };
+                    match cmd.to_ascii_lowercase().as_str() {
+                        "block" => {
+                            if let Some(RespData::Integer(n)) = v_iter.next() {
+                                block = Some(n.clone() as u64);
+                            }
                         }
-
-                        if cmd_options.len() % 2 != 0 {
-                            return Err(CommandError::WrongNumberOfArguments("XREAD".into()));
+                        "streams" => {
+                            while let Some(d) = v_iter.next() {
+                                match d {
+                                    RespData::String(s) => {
+                                        cmd_options.push(s.to_string());
+                                    }
+                                    RespData::Integer(s) => {
+                                        cmd_options.push(s.to_string());
+                                    }
+                                    _ => {
+                                        return Err(CommandError::WrongNumberOfArguments(
+                                            "XREAD".into(),
+                                        ))
+                                    }
+                                }
+                            }
+                            if cmd_options.len() % 2 != 0 {
+                                return Err(CommandError::WrongNumberOfArguments("XREAD".into()));
+                            } else {
+                                break;
+                            }
                         }
+                        _ => break,
                     }
-                    _ => {}
                 }
 
                 let mid = cmd_options.len() / 2;
                 let keys: Vec<_> = cmd_options[..mid].to_vec();
                 let entry_ids: Vec<_> = cmd_options[mid..].to_vec();
-                return Ok(Command::Xread(Xread { keys, entry_ids }));
+                let cmd = Command::Xread(Xread {
+                    block,
+                    keys,
+                    entry_ids,
+                });
+                return Ok(cmd);
             }
             _ => {}
         }

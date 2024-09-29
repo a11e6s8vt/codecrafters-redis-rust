@@ -66,6 +66,7 @@ pub struct Xrange {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Xread {
+    pub block: Option<u64>,
     pub keys: Vec<String>,
     pub entry_ids: Vec<String>,
 }

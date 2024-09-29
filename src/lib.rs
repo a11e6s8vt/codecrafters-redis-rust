@@ -9,7 +9,6 @@ mod resp;
 use std::{
     any::Any,
     collections::VecDeque,
-    f32::MAX,
     future::Future,
     pin::Pin,
     str,
@@ -29,12 +28,11 @@ pub use global::STATE;
 
 use parse::parse_command;
 use rand::{distributions::Alphanumeric, Rng};
-use resp::{parse_handshake_response, RespData, RespError, Tokenizer};
+use resp::RespData;
 
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt, BufWriter},
+    io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    stream,
     sync::Mutex,
     time::{self, Duration},
 };
@@ -67,20 +65,20 @@ impl Follower {
         listening_port: Option<u16>,
         leader_addr: Option<String>,
     ) -> Self {
-        let bind_address = if bind_address.is_some() {
-            bind_address.unwrap()
+        let bind_address = if let Some(bind_address) = bind_address {
+            bind_address
         } else {
             "127.0.0.1".to_string()
         };
 
-        let listening_port = if listening_port.is_some() {
-            listening_port.unwrap()
+        let listening_port = if let Some(listening_port) = listening_port {
+            listening_port
         } else {
             panic!("Port cannot be empty!");
         };
 
-        let leader_addr = if leader_addr.is_some() {
-            leader_addr.unwrap()
+        let leader_addr = if let Some(leader_addr) = leader_addr {
+            leader_addr
         } else {
             panic!("Leader address (--replicaof) cannot be empty");
         };
@@ -117,8 +115,7 @@ impl<'a> RedisInstance for Follower {
             // initialise the DB
             //let db: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
             let kv_store: KeyValueStore<String, String> = KeyValueStore::new();
-            let stream_store: Arc<Mutex<RadixTreeStore>> =
-                Arc::new(Mutex::new(RadixTreeStore::new()));
+            let stream_store: RadixTreeStore = RadixTreeStore::new();
 
             let kv_store_follower = kv_store.clone();
             let kv_store_client = kv_store.clone();
@@ -201,8 +198,7 @@ impl RedisInstance for Leader {
             // initialise the DB
             //let db: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
             let kv_store: KeyValueStore<String, String> = KeyValueStore::new();
-            let stream_store: Arc<Mutex<RadixTreeStore>> =
-                Arc::new(Mutex::new(RadixTreeStore::new()));
+            let stream_store: RadixTreeStore = RadixTreeStore::new();
             let state = Arc::new(Mutex::new(Shared::new()));
 
             if self.dir_name.is_some() && self.dbfilename.is_some() {
@@ -352,14 +348,12 @@ async fn follower_thread(
             let cmd_from_leader = buffer[..n].to_vec();
 
             let s = String::from_utf8_lossy(&cmd_from_leader).to_string();
-            dbg!(&s);
 
             if let Ok(resp_parsed) = RespData::parse(&s) {
                 let total_bytes = calculate_bytes(bytes_received.clone(), &resp_parsed);
                 // let resp_parsed_clone = resp_parsed.clone();
                 let mut resp_parsed_iter = resp_parsed.iter();
                 while let Some(parsed) = resp_parsed_iter.next() {
-                    dbg!(&parsed);
                     match parsed {
                         RespData::Array(v) => match parse_command(v.to_vec()) {
                             Ok(res) => match res {
@@ -377,7 +371,6 @@ async fn follower_thread(
                                     let first = args_iter.next().expect("First cannot be empty");
                                     match first.to_ascii_lowercase().as_str() {
                                         "getack" => {
-                                            dbg!("getack");
                                             let opt = args_iter
                                                 .next()
                                                 .expect("Expect a valid port number");
@@ -507,7 +500,6 @@ async fn follower_handshake(stream: Arc<Mutex<TcpStream>>) -> anyhow::Result<(),
     let mut buffer = [0; 56];
     let _ = stream.read_exact(&mut buffer).await;
     if let Ok(leader_response) = std::str::from_utf8(&buffer) {
-        dbg!(&leader_response);
         if !leader_response.to_ascii_lowercase().contains("fullresync") {
             return Err("Handshake failed!".to_string());
         }
@@ -556,10 +548,6 @@ fn calculate_bytes(bytes_received: Arc<AtomicUsize>, parsed: &Vec<RespData>) -> 
     let mut total_bytes: usize = 0;
     for data in parsed {
         match data {
-            RespData::String(_) => todo!(),
-            RespData::ErrorStr(_) => todo!(),
-            RespData::Integer(_) => todo!(),
-            RespData::BulkStr(bytes) => todo!(),
             RespData::Array(vec) => {
                 let mut cmd = String::from(&format!("*{}\r\n", vec.len()));
                 for item in vec {
@@ -571,26 +559,12 @@ fn calculate_bytes(bytes_received: Arc<AtomicUsize>, parsed: &Vec<RespData>) -> 
                         RespData::Integer(num) => {
                             cmd.push_str(&format!("${}\r\n{}\r\n", num.to_string().len(), num));
                         }
-                        RespData::BulkStr(bytes) => todo!(),
-                        RespData::Array(vec) => todo!(),
-                        RespData::Null => todo!(),
-                        RespData::Boolean(_) => todo!(),
-                        RespData::Double(_) => todo!(),
-                        RespData::BulkError(bytes) => todo!(),
-                        RespData::VerbatimStr(bytes) => todo!(),
-                        RespData::Map(hash_map) => todo!(),
-                        RespData::Set(hash_set) => todo!(),
+                        _ => todo!(),
                     }
                 }
                 total_bytes = bytes_received.fetch_add(cmd.len(), Ordering::Relaxed);
             }
-            RespData::Null => todo!(),
-            RespData::Boolean(_) => todo!(),
-            RespData::Double(_) => todo!(),
-            RespData::BulkError(bytes) => todo!(),
-            RespData::VerbatimStr(bytes) => todo!(),
-            RespData::Map(hash_map) => todo!(),
-            RespData::Set(hash_set) => todo!(),
+            _ => todo!(),
         }
     }
 
