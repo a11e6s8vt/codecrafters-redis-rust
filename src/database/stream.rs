@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::ascii::AsciiExt;
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -278,8 +279,13 @@ impl RadixTreeStore {
             }
         }
 
+        let last_entry_id_lock = self.last_entry_id.read().await;
+        let last_entry_id = last_entry_id_lock.print();
+        drop(last_entry_id_lock);
+
         let start = match start {
             "-" => "",
+            "$" => &last_entry_id,
             _ => start,
         };
         //self.get_range(current_node, "", start, end, &mut results)
@@ -325,7 +331,23 @@ impl RadixTreeStore {
         Ok(results)
     }
 
-    pub async fn check_availability(&self, timeout: u64, entry_id: &str) -> Option<String> {
+    pub async fn check_availability(
+        &self,
+        timeout: u64,
+        entry_id: &str,
+    ) -> Option<(String, String)> {
+        let last_entry_id_lock = self.last_entry_id.read().await;
+        let last_entry_id = last_entry_id_lock.print().to_ascii_lowercase();
+        drop(last_entry_id_lock);
+
+        let entry_id = if entry_id == "$" {
+            last_entry_id.as_str()
+        } else {
+            entry_id
+        };
+
+        dbg!(&entry_id);
+
         let mut rx = self.rx.lock().await;
         let mut count = 2;
         let timeout_duration = if timeout == 0 {
@@ -351,8 +373,10 @@ impl RadixTreeStore {
                     dbg!("Waiting for message");
                     // notification received indicating a new insert
                     if let Some(message) = rx.recv().await {
+                        dbg!(&message);
                         if message.to_ascii_lowercase().as_str() > entry_id {
-                            return Some(message);
+                            dbg!("Greater");
+                            return Some((last_entry_id, message));
                         }
                     }
                 }

@@ -486,11 +486,17 @@ async fn process_socket_read(
                                             );
                                             responses.extend(t);
                                         } else {
+                                            //dbg!(&o);
                                             match stream_store
                                                 .check_availability(timeout, entry_id.as_str())
                                                 .await
                                             {
-                                                Some(_s) => {
+                                                Some((last_entry_id, _new_entry_id)) => {
+                                                    let entry_id = if entry_id == "$" {
+                                                        last_entry_id.as_str()
+                                                    } else {
+                                                        entry_id
+                                                    };
                                                     if let Ok(items_in_range) = stream_store
                                                         .xrange(key, entry_id, "++")
                                                         .await
