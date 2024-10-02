@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crate::{
     cmds::{
-        Command, CommandError, Config, Echo, Get, Info, InfoSubCommand, Keys, Ping, Psync,
+        Command, CommandError, Config, Echo, Get, Incr, Info, InfoSubCommand, Keys, Ping, Psync,
         Replconf, Save, Set, SubCommand, Type, Wait, Xadd, Xrange, Xread,
     },
     resp::RespData,
@@ -72,7 +72,7 @@ pub fn parse_command(v: Vec<RespData>) -> anyhow::Result<Command, CommandError> 
 
                 let s = Set { key, value, expiry };
 
-                if let Some(_) = v_iter.next() {
+                if v_iter.next().is_some() {
                     return Err(CommandError::SyntaxError("set".into()));
                 }
 
@@ -85,12 +85,26 @@ pub fn parse_command(v: Vec<RespData>) -> anyhow::Result<Command, CommandError> 
                     return Err(CommandError::WrongNumberOfArguments("get".into()));
                 };
 
-                if let Some(_) = v_iter.next() {
+                if v_iter.next().is_some() {
                     return Err(CommandError::WrongNumberOfArguments("get".into()));
                 }
 
                 let g = Get { key };
                 return Ok(Command::Get(g));
+            }
+            "incr" => {
+                let key = if let Some(RespData::String(key)) = v_iter.next() {
+                    key.to_owned()
+                } else {
+                    return Err(CommandError::WrongNumberOfArguments("INCR".into()));
+                };
+
+                if v_iter.next().is_some() {
+                    return Err(CommandError::WrongNumberOfArguments("INCR".into()));
+                }
+
+                let g = Incr { key };
+                return Ok(Command::Incr(g));
             }
             "ping" => {
                 if let Some(RespData::String(value)) = v_iter.next() {

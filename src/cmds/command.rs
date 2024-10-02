@@ -13,6 +13,11 @@ pub struct Set {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct Incr {
+    pub key: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Ping {
     pub value: Option<String>,
 }

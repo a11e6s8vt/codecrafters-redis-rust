@@ -1,5 +1,5 @@
 pub use command::{
-    Echo, Get, Keys, Ping, Psync, Replconf, Save, Set, Type, Wait, Xadd, Xrange, Xread,
+    Echo, Get, Incr, Keys, Ping, Psync, Replconf, Save, Set, Type, Wait, Xadd, Xrange, Xread,
 };
 pub use config::{Config, SubCommand};
 pub use info::{Info, InfoSubCommand};
@@ -12,6 +12,7 @@ mod info;
 pub enum Command {
     Get(Get),
     Set(Set),
+    Incr(Incr),
     Ping(Ping),
     Echo(Echo),
     Config(Config),

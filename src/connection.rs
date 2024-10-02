@@ -182,6 +182,41 @@ async fn process_socket_read(
                             // replicate data to peers
                             state.lock().await.broadcast(str_from_network).await;
                         }
+                        Command::Incr(o) => {
+                            let mut invalid: bool = false;
+                            let key = o.key;
+                            let mut kv_store = kv_store.clone();
+                            let new_value = if let Some(value) = kv_store.get(&key).await {
+                                let mut new_value = 0i64;
+                                if let Ok(value) = value.parse::<i64>() {
+                                    new_value = value + 1;
+                                } else {
+                                    responses.push(
+                                        format!(
+                                            "$-1 value is not an integer or out of range{}",
+                                            CRLF
+                                        )
+                                        .as_bytes()
+                                        .to_vec(),
+                                    );
+                                    invalid = true;
+                                }
+                                new_value
+                            } else {
+                                1i64
+                            };
+
+                            if !invalid {
+                                kv_store
+                                    .insert(key.clone(), new_value.to_string(), None)
+                                    .await;
+                                responses
+                                    .push(format!(":{}{}", new_value, CRLF).as_bytes().to_vec());
+                            }
+                            drop(kv_store);
+                            // replicate data to peers
+                            state.lock().await.broadcast(str_from_network).await;
+                        }
                         Command::Config(o) => {
                             match o.sub_command {
                                 SubCommand::Get(pattern) => {
