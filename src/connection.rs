@@ -193,7 +193,7 @@ async fn process_socket_read(
                                 } else {
                                     responses.push(
                                         format!(
-                                            "$-1 value is not an integer or out of range{}",
+                                            "-ERR value is not an integer or out of range{}",
                                             CRLF
                                         )
                                         .as_bytes()
