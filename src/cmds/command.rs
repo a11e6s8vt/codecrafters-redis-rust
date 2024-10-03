@@ -75,3 +75,6 @@ pub struct Xread {
     pub keys: Vec<String>,
     pub entry_ids: Vec<String>,
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Multi;

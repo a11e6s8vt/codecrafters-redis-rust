@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use crate::{
     cmds::{
-        Command, CommandError, Config, Echo, Get, Incr, Info, InfoSubCommand, Keys, Ping, Psync,
-        Replconf, Save, Set, SubCommand, Type, Wait, Xadd, Xrange, Xread,
+        Command, CommandError, Config, Echo, Get, Incr, Info, InfoSubCommand, Keys, Multi, Ping,
+        Psync, Replconf, Save, Set, SubCommand, Type, Wait, Xadd, Xrange, Xread,
     },
     resp::RespData,
 };
@@ -127,7 +127,7 @@ pub fn parse_command(v: Vec<RespData>) -> anyhow::Result<Command, CommandError> 
                         value: Some(value.to_owned()),
                     };
 
-                    if let Some(_) = v_iter.next() {
+                    if v_iter.next().is_some() {
                         return Err(CommandError::WrongNumberOfArguments("echo".into()));
                     }
                     return Ok(Command::Echo(e));
@@ -135,6 +135,12 @@ pub fn parse_command(v: Vec<RespData>) -> anyhow::Result<Command, CommandError> 
                     let e = Echo { value: None };
                     return Ok(Command::Echo(e));
                 };
+            }
+            "multi" => {
+                if v_iter.next().is_some() {
+                    return Err(CommandError::WrongNumberOfArguments("multi".into()));
+                }
+                return Ok(Command::Multi(Multi));
             }
             "config" => {
                 let subcommand = if let Some(RespData::String(name)) = v_iter.next() {

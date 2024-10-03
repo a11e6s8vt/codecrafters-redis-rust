@@ -31,7 +31,6 @@ pub struct Connection {
     // reader: Arc<Mutex<BufReader<ReadHalf<'a>>>>,
     // writer: Arc<Mutex<BufWriter<WriteHalf<'a>>>>,
     buffer: BytesMut,
-    is_a_peer: bool,
 }
 
 impl Connection {
@@ -50,7 +49,6 @@ impl Connection {
             // reader,
             // writer,
             buffer: BytesMut::with_capacity(CHUNK_SIZE),
-            is_a_peer: false,
         }
     }
 
@@ -107,7 +105,7 @@ impl Connection {
 }
 
 async fn process_socket_read(
-    str_from_network: &Vec<u8>,
+    str_from_network: &[u8],
     state: Arc<Mutex<Shared>>,
     kv_store: &KeyValueStore<String, String>,
     stream_store: &RadixTreeStore,
@@ -152,6 +150,9 @@ async fn process_socket_read(
                                 );
                             }
                         }
+                        Command::Multi(_o) => {
+                            responses.push(format!("+OK{}", CRLF).as_bytes().to_vec());
+                        }
                         Command::Get(o) => {
                             let key = o.key;
                             let mut kv_store = kv_store.clone();
@@ -180,7 +181,11 @@ async fn process_socket_read(
                             responses.push(format!("+OK{}", CRLF).as_bytes().to_vec());
                             drop(kv_store);
                             // replicate data to peers
-                            state.lock().await.broadcast(str_from_network).await;
+                            state
+                                .lock()
+                                .await
+                                .broadcast(str_from_network.to_vec())
+                                .await;
                         }
                         Command::Incr(o) => {
                             let mut invalid: bool = false;
@@ -215,7 +220,11 @@ async fn process_socket_read(
                             }
                             drop(kv_store);
                             // replicate data to peers
-                            state.lock().await.broadcast(str_from_network).await;
+                            state
+                                .lock()
+                                .await
+                                .broadcast(str_from_network.to_vec())
+                                .await;
                         }
                         Command::Config(o) => {
                             match o.sub_command {

@@ -170,17 +170,13 @@ impl Leader {
         dir_name: Option<String>,
         dbfilename: Option<String>,
     ) -> Self {
-        let bind_address = if bind_address.is_some() {
-            bind_address.unwrap()
+        let bind_address = if let Some(bind_address) = bind_address {
+            bind_address
         } else {
             "127.0.0.1".to_string()
         };
 
-        let listening_port = if listening_port.is_some() {
-            listening_port.unwrap()
-        } else {
-            6379u16
-        };
+        let listening_port = listening_port.unwrap_or(6379u16);
 
         Self {
             bind_address,
