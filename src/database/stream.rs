@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use std::ascii::AsciiExt;
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -170,7 +169,7 @@ impl RadixTreeStore {
     }
 
     pub async fn insert(
-        &mut self,
+        &self,
         key: &str,
         entry_id: &str,
         data: Vec<(String, String)>,

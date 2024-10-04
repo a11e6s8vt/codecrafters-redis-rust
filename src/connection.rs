@@ -1,20 +1,17 @@
 use crate::{
     cmds::{Command, CommandError, InfoSubCommand, SubCommand},
-    database::{self, KeyValueStore, Peer, RadixTreeStore, Shared, StreamEntry},
+    database::{self, Peer, SharedState, StreamEntry},
     parse::parse_command,
     resp::RespError,
 };
 use bytes::BytesMut;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
-use std::sync::{atomic::AtomicUsize, Arc};
+use std::sync::{atomic::AtomicUsize, atomic::Ordering::Relaxed, Arc};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
-    sync::{
-        mpsc::{self, UnboundedSender},
-        Mutex,
-    },
+    sync::mpsc::{self, UnboundedSender},
     time::{self, Duration},
 };
 
@@ -25,7 +22,7 @@ const CHUNK_SIZE: usize = 16 * 1024;
 const CRLF: &str = "\r\n";
 
 pub struct Connection {
-    state: Arc<Mutex<Shared>>,
+    state: Arc<SharedState>,
     pub socket_addr: SocketAddr,
     stream: TcpStream,
     // reader: Arc<Mutex<BufReader<ReadHalf<'a>>>>,
@@ -34,29 +31,16 @@ pub struct Connection {
 }
 
 impl Connection {
-    pub fn new(
-        state: Arc<Mutex<Shared>>,
-        stream: TcpStream,
-        socket_addr: SocketAddr,
-    ) -> Connection {
-        // let (reader, writer) = stream.split();
-        // let reader = Arc::new(Mutex::new(BufReader::new(reader)));
-        // let writer = Arc::new(Mutex::new(BufWriter::new(writer)));
+    pub fn new(state: Arc<SharedState>, stream: TcpStream, socket_addr: SocketAddr) -> Connection {
         Self {
             state,
             socket_addr,
             stream,
-            // reader,
-            // writer,
             buffer: BytesMut::with_capacity(CHUNK_SIZE),
         }
     }
 
-    pub async fn handle(
-        &mut self,
-        kv_store: KeyValueStore<String, String>,
-        stream_store: RadixTreeStore,
-    ) -> anyhow::Result<(), RespError> {
+    pub async fn handle(&mut self) -> anyhow::Result<(), RespError> {
         let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
         // Stores handshake messages in sequence and identify a replica
@@ -83,7 +67,8 @@ impl Connection {
                             }
                         }
                         let str_from_network = self.buffer[..num_bytes_read].to_vec();
-                        let responses = process_socket_read(&str_from_network, self.state.clone(), &kv_store, &stream_store, self.socket_addr, tx.clone(), &mut identify_replica).await?;
+                        let responses = process_socket_read(
+                            &str_from_network, self.state.clone(), self.socket_addr, tx.clone(), &mut identify_replica).await?;
                         self.write(responses).await;
                         self.buffer.clear();
                     }
@@ -106,9 +91,7 @@ impl Connection {
 
 async fn process_socket_read(
     str_from_network: &[u8],
-    state: Arc<Mutex<Shared>>,
-    kv_store: &KeyValueStore<String, String>,
-    stream_store: &RadixTreeStore,
+    state: Arc<SharedState>,
     socket_addr: SocketAddr,
     tx: UnboundedSender<Vec<u8>>,
     identify_replica: &mut Vec<(SocketAddr, String)>,
@@ -118,9 +101,8 @@ async fn process_socket_read(
     if let Ok(resp_parsed) = RespData::parse(&s) {
         let mut resp_parsed_iter = resp_parsed.iter();
         while let Some(parsed) = resp_parsed_iter.next() {
-            let str_from_network = str_from_network.clone();
-            match parsed {
-                RespData::Array(v) => match parse_command(v.to_vec()) {
+            if let RespData::Array(v) = parsed {
+                match parse_command(v.to_vec()) {
                     Ok(res) => match res {
                         Command::Ping(o) => {
                             if o.value.is_some() {
@@ -151,12 +133,104 @@ async fn process_socket_read(
                             }
                         }
                         Command::Multi(_o) => {
+                            let mut client_lock = state.clients.write().await;
+                            if let Some(client) = client_lock.get_mut(&socket_addr) {
+                                client
+                                    .multi_lock
+                                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
                             responses.push(format!("+OK{}", CRLF).as_bytes().to_vec());
+                        }
+                        Command::Exec(o) => {
+                            let mut client_lock = state.clients.write().await;
+                            if let Some(client_handle) = client_lock.get_mut(&socket_addr) {
+                                if !client_handle.multi_lock.load(Relaxed) {
+                                    responses.push(
+                                        format!("-ERR EXEC without MULTI{}", CRLF)
+                                            .as_bytes()
+                                            .to_vec(),
+                                    );
+                                } else {
+                                    let mut queue_lock = client_handle.multi_queue.lock().await;
+                                    responses.push(
+                                        format!("*{}{}", queue_lock.len(), CRLF)
+                                            .as_bytes()
+                                            .to_vec(),
+                                    );
+                                    while let Some(cmd) = queue_lock.pop_front() {
+                                        match cmd {
+                                            Command::Set(o) => {
+                                                let key = o.key;
+                                                let value = o.value;
+                                                let expiry = o.expiry;
+                                                state
+                                                    .kv_store_insert(
+                                                        key.clone(),
+                                                        value.clone(),
+                                                        expiry,
+                                                    )
+                                                    .await;
+                                                responses.push(
+                                                    format!("+OK{}", CRLF).as_bytes().to_vec(),
+                                                );
+                                                // replicate data to peers
+                                                state
+                                                    .broadcast_peers(str_from_network.to_vec())
+                                                    .await;
+                                            }
+                                            Command::Incr(o) => {
+                                                let mut invalid: bool = false;
+                                                let key = o.key;
+                                                let new_value = if let Some(value) =
+                                                    state.kv_store_get(&key).await
+                                                {
+                                                    let mut new_value = 0i64;
+                                                    if let Ok(value) = value.parse::<i64>() {
+                                                        new_value = value + 1;
+                                                    } else {
+                                                        responses.push(
+                                                            format!("-ERR value is not an integer or out of range{}", CRLF)
+                                                            .as_bytes()
+                                                            .to_vec(),
+                                                        );
+                                                        invalid = true;
+                                                    }
+                                                    new_value
+                                                } else {
+                                                    1i64
+                                                };
+
+                                                if !invalid {
+                                                    state
+                                                        .kv_store
+                                                        .insert(
+                                                            key.clone(),
+                                                            new_value.to_string(),
+                                                            None,
+                                                        )
+                                                        .await;
+                                                    responses.push(
+                                                        format!(":{}{}", new_value, CRLF)
+                                                            .as_bytes()
+                                                            .to_vec(),
+                                                    );
+                                                }
+                                                // replicate data to peers
+                                                state
+                                                    .broadcast_peers(str_from_network.to_vec())
+                                                    .await;
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    drop(queue_lock);
+                                }
+                            }
+                            drop(client_lock);
                         }
                         Command::Get(o) => {
                             let key = o.key;
-                            let mut kv_store = kv_store.clone();
-                            if let Some(value) = kv_store.get(&key).await {
+                            if let Some(value) = state.kv_store_get(&key).await {
                                 responses.push(
                                     format!(
                                         "${}{}{}{}",
@@ -173,58 +247,73 @@ async fn process_socket_read(
                             }
                         }
                         Command::Set(o) => {
-                            let key = o.key;
-                            let value = o.value;
+                            let key = o.key.clone();
+                            let value = o.value.clone();
                             let expiry = o.expiry;
-                            let mut kv_store = kv_store.clone();
-                            kv_store.insert(key.clone(), value.clone(), expiry).await;
-                            responses.push(format!("+OK{}", CRLF).as_bytes().to_vec());
-                            drop(kv_store);
-                            // replicate data to peers
-                            state
-                                .lock()
-                                .await
-                                .broadcast(str_from_network.to_vec())
-                                .await;
+                            let mut client_lock = state.clients.write().await;
+                            let client_handle = client_lock.get_mut(&socket_addr).unwrap();
+                            if !client_handle.multi_lock.load(Relaxed) {
+                                state
+                                    .kv_store_insert(key.clone(), value.clone(), expiry)
+                                    .await;
+                                responses.push(format!("+OK{}", CRLF).as_bytes().to_vec());
+                                // replicate data to peers
+                                state.broadcast_peers(str_from_network.to_vec()).await;
+                            } else {
+                                client_handle
+                                    .multi_queue
+                                    .lock()
+                                    .await
+                                    .push_back(Command::Set(o));
+                                responses.push(format!("+QUEUED{}", CRLF).as_bytes().to_vec());
+                            }
                         }
                         Command::Incr(o) => {
                             let mut invalid: bool = false;
-                            let key = o.key;
-                            let mut kv_store = kv_store.clone();
-                            let new_value = if let Some(value) = kv_store.get(&key).await {
-                                let mut new_value = 0i64;
-                                if let Ok(value) = value.parse::<i64>() {
-                                    new_value = value + 1;
+                            let key = o.key.clone();
+                            let mut client_lock = state.clients.write().await;
+                            let client_handle = client_lock.get_mut(&socket_addr).unwrap();
+                            if !client_handle.multi_lock.load(Relaxed) {
+                                let new_value = if let Some(value) = state.kv_store_get(&key).await
+                                {
+                                    let mut new_value = 0i64;
+                                    if let Ok(value) = value.parse::<i64>() {
+                                        new_value = value + 1;
+                                    } else {
+                                        responses.push(
+                                            format!(
+                                                "-ERR value is not an integer or out of range{}",
+                                                CRLF
+                                            )
+                                            .as_bytes()
+                                            .to_vec(),
+                                        );
+                                        invalid = true;
+                                    }
+                                    new_value
                                 } else {
-                                    responses.push(
-                                        format!(
-                                            "-ERR value is not an integer or out of range{}",
-                                            CRLF
-                                        )
-                                        .as_bytes()
-                                        .to_vec(),
-                                    );
-                                    invalid = true;
-                                }
-                                new_value
-                            } else {
-                                1i64
-                            };
+                                    1i64
+                                };
 
-                            if !invalid {
-                                kv_store
-                                    .insert(key.clone(), new_value.to_string(), None)
-                                    .await;
-                                responses
-                                    .push(format!(":{}{}", new_value, CRLF).as_bytes().to_vec());
+                                if !invalid {
+                                    state
+                                        .kv_store
+                                        .insert(key.clone(), new_value.to_string(), None)
+                                        .await;
+                                    responses.push(
+                                        format!(":{}{}", new_value, CRLF).as_bytes().to_vec(),
+                                    );
+                                }
+                                // replicate data to peers
+                                state.broadcast_peers(str_from_network.to_vec()).await;
+                            } else {
+                                client_handle
+                                    .multi_queue
+                                    .lock()
+                                    .await
+                                    .push_back(Command::Incr(o));
+                                responses.push(format!("+QUEUED{}", CRLF).as_bytes().to_vec());
                             }
-                            drop(kv_store);
-                            // replicate data to peers
-                            state
-                                .lock()
-                                .await
-                                .broadcast(str_from_network.to_vec())
-                                .await;
                         }
                         Command::Config(o) => {
                             match o.sub_command {
@@ -253,16 +342,16 @@ async fn process_socket_read(
                         }
                         Command::Save(_o) => {
                             responses.push(format!("+OK{}", CRLF).as_bytes().to_vec());
-                            database::write_to_disk(kv_store.clone())
+                            database::write_to_disk(state.kv_store.clone())
                                 .await
                                 .expect("Write failed")
                         }
                         Command::Keys(o) => {
                             let _arg = o.arg;
                             // *1\r\n$3\r\nfoo\r\n
-                            let mut response = format!("*{}{}", kv_store.get_ht_size().await, CRLF);
-                            let mut kv_store = kv_store.clone();
-                            for (key, _) in kv_store.iter().await {
+                            let mut response =
+                                format!("*{}{}", state.kv_store.get_ht_size().await, CRLF);
+                            for (key, _) in state.kv_store.iter().await {
                                 response.push_str(&format!(
                                     "${}{}{}{}",
                                     key.len(),
@@ -358,9 +447,7 @@ async fn process_socket_read(
                                         .parse::<usize>()
                                         .expect("expect a valid number as bytes");
                                     state
-                                        .lock()
-                                        .await
-                                        .update_bytes_written(socket_addr, bytes_written)
+                                        .update_peers_bytes_written(socket_addr, bytes_written)
                                         .await;
                                 }
                                 _ => {}
@@ -410,7 +497,7 @@ async fn process_socket_read(
                                                 bytes_written: AtomicUsize::new(0),
                                                 commands_processed: VecDeque::with_capacity(5),
                                             };
-                                            state.lock().await.peers.insert(socket_addr, peer);
+                                            state.insert_peer(socket_addr, peer).await;
                                         }
                                     }
                                 }
@@ -418,10 +505,9 @@ async fn process_socket_read(
                         }
                         Command::Type(o) => {
                             let key = o.key;
-                            let mut kv_store = kv_store.clone();
-                            if let Some(_value) = kv_store.get(&key).await {
+                            if let Some(_value) = state.kv_store_get(&key).await {
                                 responses.push(format!("+string{}", CRLF,).as_bytes().to_vec());
-                            } else if stream_store.check_key(&key).await.is_some() {
+                            } else if state.stream_store.check_key(&key).await.is_some() {
                                 responses.push(format!("+stream{}", CRLF,).as_bytes().to_vec());
                             } else {
                                 responses.push(format!("+none{}", CRLF).as_bytes().to_vec());
@@ -442,20 +528,19 @@ async fn process_socket_read(
                                 .expect("`timeout` should be a number");
 
                             let n = if numreplicas == 0 {
-                                state.lock().await.peers.len()
+                                state.peers.read().await.len()
                             } else {
                                 let msg = "*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n"
                                     .as_bytes()
                                     .to_vec();
                                 let offset_len = msg.len();
                                 //let mut state = state.lock().await;
-                                state.lock().await.broadcast(msg).await;
+                                state.broadcast_peers(msg).await;
                                 time::sleep(Duration::from_millis(timeout)).await;
-                                let n = if state.lock().await.count_commands_processed().await == 0
-                                {
-                                    state.lock().await.peers.len()
+                                let n = if state.count_peers_commands_processed().await == 0 {
+                                    state.peers.read().await.len()
                                 } else {
-                                    state.lock().await.verify_propagation(offset_len).await
+                                    state.verify_peers_propagation(offset_len).await
                                 };
                                 n
                             };
@@ -467,9 +552,8 @@ async fn process_socket_read(
                             let key = o.key;
                             let entry_id = o.entry_id;
                             let args = o.args;
-                            let mut stream_store = stream_store.clone();
-                            match stream_store
-                                .insert(key.as_str(), entry_id.as_str(), args)
+                            match state
+                                .stream_store_insert(key.as_str(), entry_id.as_str(), args)
                                 .await
                             {
                                 Ok(entry_id) => {
@@ -487,14 +571,15 @@ async fn process_socket_read(
                                     res.push_str(&error_msg);
                                 }
                             }
-                            drop(stream_store);
                             responses.push(res.as_bytes().to_vec());
                         }
                         Command::Xrange(o) => {
                             let key = o.key.as_str();
                             let start = o.start.as_str();
                             let end = o.end.as_str();
-                            if let Ok(items_in_range) = stream_store.xrange(key, start, end).await {
+                            if let Ok(items_in_range) =
+                                state.stream_store.xrange(key, start, end).await
+                            {
                                 responses
                                     .extend(format_xrange_output(&items_in_range, "".to_string()));
                             } else {
@@ -512,7 +597,7 @@ async fn process_socket_read(
                                     responses.push(resp_init_str.as_bytes().to_vec());
                                     for (key, entry_id) in keys.iter().zip(entry_ids.iter()) {
                                         if let Ok(items_in_range) =
-                                            stream_store.xrange(key, entry_id, "++").await
+                                            state.stream_store.xrange(key, entry_id, "++").await
                                         {
                                             let response_init_str = format!(
                                                 "*2{}${}{}{}{}",
@@ -531,7 +616,8 @@ async fn process_socket_read(
                                             responses.extend(t);
                                         } else {
                                             //dbg!(&o);
-                                            match stream_store
+                                            match state
+                                                .stream_store
                                                 .check_availability(timeout, entry_id.as_str())
                                                 .await
                                             {
@@ -541,7 +627,8 @@ async fn process_socket_read(
                                                     } else {
                                                         entry_id
                                                     };
-                                                    if let Ok(items_in_range) = stream_store
+                                                    if let Ok(items_in_range) = state
+                                                        .stream_store
                                                         .xrange(key, entry_id, "++")
                                                         .await
                                                     {
@@ -570,7 +657,7 @@ async fn process_socket_read(
                                                     dbg!("None");
                                                     responses.clear();
                                                     responses.push(
-                                                        format!("$-1\r\n").as_bytes().to_vec(),
+                                                        "$-1\r\n".to_string().as_bytes().to_vec(),
                                                     )
                                                 }
                                             }
@@ -591,7 +678,7 @@ async fn process_socket_read(
                                         );
                                         responses.push(response_init_str.as_bytes().to_vec());
                                         if let Ok(items_in_range) =
-                                            stream_store.xrange(key, entry_id, "++").await
+                                            state.stream_store.xrange(key, entry_id, "++").await
                                         {
                                             responses.extend(format_xrange_output(
                                                 &items_in_range,
@@ -599,7 +686,8 @@ async fn process_socket_read(
                                             ))
                                         } else {
                                             responses.clear();
-                                            responses.push(format!("$-1\r\n").as_bytes().to_vec())
+                                            responses
+                                                .push("$-1\r\n".to_string().as_bytes().to_vec())
                                         }
                                     }
                                 }
@@ -628,21 +716,13 @@ async fn process_socket_read(
                                 .push(format!("-{}{}", &e.message(), CRLF).as_bytes().to_vec());
                         }
                     },
-                },
-                _ => {}
-            };
+                };
+            } else {
+                return Err(RespError::Invalid);
+            }
         }
-    } else {
-        // todo: it must be parse error
-        return Err(RespError::Invalid);
     }
-
     Ok(responses)
-}
-
-async fn follower_replication_acks(state: Arc<Mutex<Shared>>) {
-    let get_ack_cmd = b"*3\r\n$8\r\nreplconf\r\n$6\r\ngetack\r\n$1\r\n*\r\n";
-    state.lock().await.broadcast(get_ack_cmd.to_vec()).await;
 }
 
 fn format_xrange_output(items_in_range: &Vec<StreamEntry>, resp_init_str: String) -> Vec<Vec<u8>> {
@@ -680,7 +760,6 @@ fn format_xrange_output(items_in_range: &Vec<StreamEntry>, resp_init_str: String
                 ));
             }
         }
-        dbg!(&response);
         responses.push(response.as_bytes().to_vec());
     } else {
         responses.push("$-1\r\n".to_string().as_bytes().to_vec());

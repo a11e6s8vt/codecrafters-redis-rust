@@ -78,3 +78,6 @@ pub struct Xread {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Multi;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Exec;

@@ -23,7 +23,7 @@ pub use cli::Cli;
 use cmds::Command;
 use connection::Connection;
 pub use database::{load_from_rdb, KeyValueStore};
-use database::{RadixTreeStore, Shared};
+use database::{Client, RadixTreeStore, SharedState};
 pub use global::STATE;
 
 use parse::parse_command;
@@ -56,7 +56,6 @@ pub struct Leader {
     pub listening_port: u16,
     pub dir_name: Option<String>,
     pub dbfilename: Option<String>,
-    pub peers: Vec<Follower>,
 }
 
 impl Follower {
@@ -109,27 +108,19 @@ pub enum Response {
     Error(String),
 }
 
-impl<'a> RedisInstance for Follower {
+impl RedisInstance for Follower {
     fn run(&self) -> Pin<Box<dyn Future<Output = ()> + '_>> {
         Box::pin(async {
-            // initialise the DB
-            //let db: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
-            let kv_store: KeyValueStore<String, String> = KeyValueStore::new();
-            let stream_store: RadixTreeStore = RadixTreeStore::new();
-
-            let kv_store_follower = kv_store.clone();
-            let kv_store_client = kv_store.clone();
-
+            let conn_states = Arc::new(SharedState::new());
             // Handle the follower thread
             let leader_addr = self.leader_addr.clone();
             let bytes_received = self.bytes_received.clone();
-            let kv_store_follower = kv_store_follower.clone();
+            let follower_shared_state = Arc::clone(&conn_states);
+
             tokio::spawn(async {
-                follower_thread(leader_addr, bytes_received, kv_store_follower).await
+                follower_thread(leader_addr, bytes_received, follower_shared_state).await
             });
 
-            // Redis clients for the Follower instance
-            let state = Arc::new(Mutex::new(Shared::new()));
             // Create TCP Listener
             let listener_addr = format!("{}:{}", self.bind_address, self.listening_port);
             let listener = TcpListener::bind(listener_addr.to_owned())
@@ -150,13 +141,11 @@ impl<'a> RedisInstance for Follower {
                 );
 
                 // Handle clients
-                let kv_store_client = kv_store_client.clone();
-                let stream_store_client = stream_store.clone();
-                let state = Arc::clone(&state);
+                let shared_state = Arc::clone(&conn_states);
 
                 tokio::spawn(async move {
-                    let mut conn = Connection::new(state, tcp_stream, socket_addr);
-                    let _ = conn.handle(kv_store_client, stream_store_client).await;
+                    let mut conn = Connection::new(shared_state, tcp_stream, socket_addr);
+                    let _ = conn.handle().await;
                 });
             }
         })
@@ -183,7 +172,6 @@ impl Leader {
             listening_port,
             dir_name,
             dbfilename,
-            peers: Vec::new(),
         }
     }
 }
@@ -191,11 +179,8 @@ impl Leader {
 impl RedisInstance for Leader {
     fn run(&self) -> Pin<Box<dyn Future<Output = ()> + '_>> {
         Box::pin(async {
-            // initialise the DB
-            //let db: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
-            let kv_store: KeyValueStore<String, String> = KeyValueStore::new();
-            let stream_store: RadixTreeStore = RadixTreeStore::new();
-            let state = Arc::new(Mutex::new(Shared::new()));
+            // manages all states of all connections (peers and clients) to the leader
+            let conn_states = Arc::new(SharedState::new());
 
             if self.dir_name.is_some() && self.dbfilename.is_some() {
                 log::info!(
@@ -203,7 +188,7 @@ impl RedisInstance for Leader {
                     self.dir_name.clone().unwrap(),
                     self.dbfilename.clone().unwrap()
                 );
-                load_from_rdb(kv_store.clone())
+                load_from_rdb(conn_states.kv_store.clone())
                     .await
                     .expect("RDB file read failed");
             }
@@ -236,14 +221,15 @@ impl RedisInstance for Leader {
                     .await
                     .expect("Accepting connection failed");
                 log::info!("Accepted connection from {}", socket_addr.ip().to_string());
+                conn_states
+                    .insert_client(socket_addr, Client::default())
+                    .await;
 
                 // Handle Clients
-                let kv_store_client = kv_store.clone();
-                let stream_store_client = stream_store.clone();
-                let state_client_handles = Arc::clone(&state);
+                let shared_state = Arc::clone(&conn_states);
                 tokio::spawn(async move {
-                    let mut conn = Connection::new(state_client_handles, tcp_stream, socket_addr);
-                    let _ = conn.handle(kv_store_client, stream_store_client).await;
+                    let mut conn = Connection::new(shared_state, tcp_stream, socket_addr);
+                    let _ = conn.handle().await;
                 });
             }
         })
@@ -263,11 +249,8 @@ pub async fn start_server(
         STATE.push(("bind_address".to_string(), bind_address.clone().unwrap()));
     }
 
-    if listening_port.is_some() {
-        STATE.push((
-            "listening_port".to_string(),
-            listening_port.unwrap().to_string(),
-        ));
+    if let Some(listening_port) = listening_port {
+        STATE.push(("listening_port".to_string(), listening_port.to_string()));
     }
 
     if dir_name.is_some() {
@@ -317,13 +300,13 @@ pub async fn start_server(
 async fn follower_thread(
     leader_addr: String,
     bytes_received: Arc<AtomicUsize>,
-    store: KeyValueStore<String, String>,
+    state: Arc<SharedState>,
 ) -> anyhow::Result<()> {
     let stream = match follower_connect(leader_addr).await {
         Ok(stream) => stream,
         Err(e) => {
             eprintln!("{}", e);
-            return Err(e.into());
+            return Err(e);
         }
     };
 
@@ -357,9 +340,9 @@ async fn follower_thread(
                                     let key = o.key;
                                     let value = o.value;
                                     let expiry = o.expiry;
-                                    let mut kv_store = store.clone();
-                                    kv_store.insert(key.clone(), value.clone(), expiry).await;
-                                    drop(kv_store);
+                                    state
+                                        .kv_store_insert(key.clone(), value.clone(), expiry)
+                                        .await;
                                 }
                                 Command::Replconf(o) => {
                                     let args = o.args;
@@ -453,13 +436,13 @@ async fn follower_connect(leader_addr: String) -> anyhow::Result<Arc<Mutex<TcpSt
 async fn follower_handshake(stream: Arc<Mutex<TcpStream>>) -> anyhow::Result<(), String> {
     // Hashshake
     let mut stream = stream.lock().await;
-    let mut buffer = BytesMut::with_capacity(1 * 512);
-    let handshake_messages_part1 = vec![
+    let mut buffer = BytesMut::with_capacity(2 * 512);
+    let handshake_messages_part1 = [
         "*1\r\n$4\r\nPING\r\n".to_string(),
         "*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$4\r\n6380\r\n".to_string(),
         "*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n".to_string(),
     ];
-    let handshake_messages_part1_responses = vec![
+    let handshake_messages_part1_responses = [
         "+PONG\r\n".to_string(),
         "+OK\r\n".to_string(),
         "+OK\r\n".to_string(),
@@ -515,18 +498,17 @@ async fn follower_handshake(stream: Arc<Mutex<TcpStream>>) -> anyhow::Result<(),
 
     let rdb_len = if let Ok(parsed) = RespData::parse(&String::from_utf8_lossy(&buffer).to_string())
     {
-        let rdb_len = match parsed[0] {
+        match parsed[0] {
             RespData::Integer(num) => num as usize,
             _ => return Err("Handshake failed!".to_string()),
-        };
-        rdb_len
+        }
     } else {
         return Err("Handshake failed!".to_string());
     };
 
     // Read `rdb_len` bytes
     let mut buffer: Vec<u8> = vec![0; rdb_len];
-    if let Ok(_) = stream.read_exact(&mut buffer).await {
+    if (stream.read_exact(&mut buffer).await).is_ok() {
         let magic_string = &buffer[..5];
         if let Ok(magic_string) = std::str::from_utf8(magic_string) {
             if !magic_string.to_ascii_lowercase().contains("redis") {

@@ -1,10 +1,8 @@
-use anyhow::{Context, Result};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::fmt::{Debug, Display};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use thiserror::Error;
-use tokio::sync::{mpsc, Mutex, Notify};
+use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
 
 pub struct KeyValueStoreIterator<K, V> {
     iter: std::collections::hash_map::IntoIter<K, (V, Option<(Instant, Duration)>)>,
@@ -46,13 +44,13 @@ where
         *self.expire_size.lock().await
     }
 
-    pub async fn iter(&mut self) -> KeyValueStoreIterator<K, V> {
+    pub async fn iter(&self) -> KeyValueStoreIterator<K, V> {
         let map = self.hash_map.lock().await;
         let iter = map.clone().into_iter();
         KeyValueStoreIterator { iter }
     }
 
-    pub async fn insert(&mut self, k: K, v: V, expiry: Option<Duration>) -> Option<V> {
+    pub async fn insert(&self, k: K, v: V, expiry: Option<Duration>) -> Option<V> {
         let mut guard = self.hash_map.lock().await;
         let val = if expiry.is_some() {
             *self.expire_size.lock().await += 1;
@@ -67,11 +65,11 @@ where
         val
     }
 
-    pub async fn get(&mut self, k: &K) -> Option<V> {
+    pub async fn get(&self, k: &K) -> Option<V> {
         let now = Instant::now();
         let mut guard = self.hash_map.lock().await;
         let val = if guard.contains_key(&k) {
-            let expired = guard.get(&k).and_then(|(x, t)| {
+            let expired = guard.get(&k).and_then(|(_, t)| {
                 if t.is_some() {
                     if (now - t.unwrap().0) > t.unwrap().1 {
                         Some(true)
@@ -88,7 +86,7 @@ where
                 guard.remove(&k);
                 None
             } else {
-                guard.get(k).and_then(|(val, t)| Some(val)).cloned()
+                guard.get(k).and_then(|(val, _)| Some(val)).cloned()
             }
         } else {
             None
@@ -104,7 +102,7 @@ where
         val
     }
 
-    pub async fn prune(&mut self) {
+    pub async fn prune(&self) {
         loop {
             let now = Instant::now();
             // let Self { hash_map, duration } = self;
