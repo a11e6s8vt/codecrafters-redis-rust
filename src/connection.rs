@@ -152,76 +152,80 @@ async fn process_socket_read(
                                     );
                                 } else {
                                     let mut queue_lock = client_handle.multi_queue.lock().await;
-                                    responses.push(
-                                        format!("*{}{}", queue_lock.len(), CRLF)
-                                            .as_bytes()
-                                            .to_vec(),
-                                    );
-                                    while let Some(cmd) = queue_lock.pop_front() {
-                                        match cmd {
-                                            Command::Set(o) => {
-                                                let key = o.key;
-                                                let value = o.value;
-                                                let expiry = o.expiry;
-                                                state
-                                                    .kv_store_insert(
-                                                        key.clone(),
-                                                        value.clone(),
-                                                        expiry,
-                                                    )
-                                                    .await;
-                                                responses.push(
-                                                    format!("+OK{}", CRLF).as_bytes().to_vec(),
-                                                );
-                                                // replicate data to peers
-                                                state
-                                                    .broadcast_peers(str_from_network.to_vec())
-                                                    .await;
-                                            }
-                                            Command::Incr(o) => {
-                                                let mut invalid: bool = false;
-                                                let key = o.key;
-                                                let new_value = if let Some(value) =
-                                                    state.kv_store_get(&key).await
-                                                {
-                                                    let mut new_value = 0i64;
-                                                    if let Ok(value) = value.parse::<i64>() {
-                                                        new_value = value + 1;
-                                                    } else {
-                                                        responses.push(
+                                    if queue_lock.len() > 0 {
+                                        responses.push(
+                                            format!("*{}{}", queue_lock.len(), CRLF)
+                                                .as_bytes()
+                                                .to_vec(),
+                                        );
+                                        while let Some(cmd) = queue_lock.pop_front() {
+                                            match cmd {
+                                                Command::Set(o) => {
+                                                    let key = o.key;
+                                                    let value = o.value;
+                                                    let expiry = o.expiry;
+                                                    state
+                                                        .kv_store_insert(
+                                                            key.clone(),
+                                                            value.clone(),
+                                                            expiry,
+                                                        )
+                                                        .await;
+                                                    responses.push(
+                                                        format!("+OK{}", CRLF).as_bytes().to_vec(),
+                                                    );
+                                                    // replicate data to peers
+                                                    state
+                                                        .broadcast_peers(str_from_network.to_vec())
+                                                        .await;
+                                                }
+                                                Command::Incr(o) => {
+                                                    let mut invalid: bool = false;
+                                                    let key = o.key;
+                                                    let new_value = if let Some(value) =
+                                                        state.kv_store_get(&key).await
+                                                    {
+                                                        let mut new_value = 0i64;
+                                                        if let Ok(value) = value.parse::<i64>() {
+                                                            new_value = value + 1;
+                                                        } else {
+                                                            responses.push(
                                                             format!("-ERR value is not an integer or out of range{}", CRLF)
                                                             .as_bytes()
                                                             .to_vec(),
                                                         );
-                                                        invalid = true;
-                                                    }
-                                                    new_value
-                                                } else {
-                                                    1i64
-                                                };
+                                                            invalid = true;
+                                                        }
+                                                        new_value
+                                                    } else {
+                                                        1i64
+                                                    };
 
-                                                if !invalid {
+                                                    if !invalid {
+                                                        state
+                                                            .kv_store
+                                                            .insert(
+                                                                key.clone(),
+                                                                new_value.to_string(),
+                                                                None,
+                                                            )
+                                                            .await;
+                                                        responses.push(
+                                                            format!(":{}{}", new_value, CRLF)
+                                                                .as_bytes()
+                                                                .to_vec(),
+                                                        );
+                                                    }
+                                                    // replicate data to peers
                                                     state
-                                                        .kv_store
-                                                        .insert(
-                                                            key.clone(),
-                                                            new_value.to_string(),
-                                                            None,
-                                                        )
+                                                        .broadcast_peers(str_from_network.to_vec())
                                                         .await;
-                                                    responses.push(
-                                                        format!(":{}{}", new_value, CRLF)
-                                                            .as_bytes()
-                                                            .to_vec(),
-                                                    );
                                                 }
-                                                // replicate data to peers
-                                                state
-                                                    .broadcast_peers(str_from_network.to_vec())
-                                                    .await;
+                                                _ => {}
                                             }
-                                            _ => {}
                                         }
+                                    } else {
+                                        responses.push("*0\r\n".to_string().as_bytes().to_vec());
                                     }
                                     drop(queue_lock);
                                 }
