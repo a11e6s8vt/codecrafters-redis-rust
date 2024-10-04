@@ -158,6 +158,29 @@ async fn process_socket_read(
                         }
                         responses.push(format!("+OK{}", CRLF).as_bytes().to_vec());
                     }
+                    Command::Discard(o) => {
+                        let mut client_lock = state.clients.write().await;
+                        if let Some(client_handle) = client_lock.get_mut(&socket_addr) {
+                            if !client_handle.multi_lock.load(Relaxed) {
+                                responses.push(
+                                    format!("-ERR DISCARD without MULTI{}", CRLF)
+                                        .as_bytes()
+                                        .to_vec(),
+                                );
+                            } else {
+                                let mut queue_lock = client_handle.multi_queue.lock().await;
+                                // if queue_lock.len() > 0 {
+                                queue_lock.clear();
+                                responses.push("+OK\r\n".to_string().as_bytes().to_vec());
+                                //} else {
+                                //    responses.push("*0\r\n".to_string().as_bytes().to_vec());
+                                //}
+                                drop(queue_lock);
+                            }
+                            client_handle.multi_lock.store(false, Relaxed);
+                        }
+                        drop(client_lock);
+                    }
                     Command::Exec(o) => {
                         let mut client_lock = state.clients.write().await;
                         if let Some(client_handle) = client_lock.get_mut(&socket_addr) {

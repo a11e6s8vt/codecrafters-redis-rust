@@ -81,3 +81,6 @@ pub struct Multi;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Exec;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Discard;
