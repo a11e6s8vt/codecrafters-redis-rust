@@ -229,6 +229,7 @@ async fn process_socket_read(
                                     }
                                     drop(queue_lock);
                                 }
+                                client_handle.multi_lock.store(false, Relaxed);
                             }
                             drop(client_lock);
                         }
